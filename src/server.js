@@ -1,5 +1,5 @@
-import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tmux from './tmux.js';
@@ -8,50 +8,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.resolve(__dirname, '../public');
 
-function json(response, statusCode, payload, extraHeaders = {}) {
-  response.writeHead(statusCode, {
-    'content-type': 'application/json; charset=utf-8',
-    ...extraHeaders,
-  });
-  response.end(JSON.stringify(payload, null, 2));
-}
-
-function noContent(response, extraHeaders = {}) {
-  response.writeHead(204, extraHeaders);
-  response.end();
-}
-
-function getCorsHeaders(config) {
-  return {
-    'access-control-allow-origin': config.corsOrigin,
-    'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-    'access-control-allow-headers': 'content-type,authorization,x-api-token',
-  };
-}
-
-async function readJsonBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  const raw = Buffer.concat(chunks).toString('utf8');
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const error = new Error('Request body must be valid JSON');
-    error.statusCode = 400;
-    throw error;
-  }
-}
-
 function getTokenFromRequest(request) {
   const bearer = request.headers.authorization;
-  if (bearer?.startsWith('Bearer ')) {
+  if (typeof bearer === 'string' && bearer.startsWith('Bearer ')) {
     return bearer.slice('Bearer '.length).trim();
   }
 
@@ -62,25 +21,21 @@ function isLocalHost(host) {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
-async function serveStatic(response, filePath) {
+async function readJsonBody(request) {
+  if (request.body == null) {
+    return {};
+  }
+
+  if (typeof request.body === 'object') {
+    return request.body;
+  }
+
   try {
-    const data = await readFile(filePath);
-    const ext = path.extname(filePath);
-    const contentType = {
-      '.html': 'text/html; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-    }[ext] ?? 'application/octet-stream';
-
-    response.writeHead(200, { 'content-type': contentType });
-    response.end(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      json(response, 404, { error: 'Not found' });
-      return;
-    }
-
-    json(response, 500, { error: error.message || 'Failed to serve static asset' });
+    return JSON.parse(request.body);
+  } catch {
+    const error = new Error('Request body must be valid JSON');
+    error.statusCode = 400;
+    throw error;
   }
 }
 
@@ -111,132 +66,121 @@ function createConfig(overrides = {}) {
   return { host, port, apiToken, corsOrigin };
 }
 
-export function createServer({
+export function createApp({
   tmuxClient = tmux,
   config: configOverrides = {},
 } = {}) {
   const config = createConfig(configOverrides);
+  const app = Fastify({ logger: false });
 
-  const server = http.createServer(async (request, response) => {
-    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    const corsHeaders = getCorsHeaders(config);
+  app.decorate('tmuxClient', tmuxClient);
+  app.decorate('runtimeConfig', config);
+
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('access-control-allow-origin', config.corsOrigin);
+    reply.header('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
+    reply.header('access-control-allow-headers', 'content-type,authorization,x-api-token');
 
     if (request.method === 'OPTIONS') {
-      noContent(response, corsHeaders);
+      reply.code(204).send();
+      return reply;
+    }
+
+    if (request.url === '/api/health') {
       return;
     }
 
-    try {
-      if (url.pathname === '/' && request.method === 'GET') {
-        await serveStatic(response, path.join(publicDir, 'index.html'));
-        return;
+    if (!request.url.startsWith('/api/')) {
+      return;
+    }
+
+    if (config.apiToken) {
+      const requestToken = getTokenFromRequest(request);
+      if (!requestToken || requestToken !== config.apiToken) {
+        reply.code(401).send({ error: 'Unauthorized' });
+        return reply;
       }
-
-      if (url.pathname === '/app.js' && request.method === 'GET') {
-        await serveStatic(response, path.join(publicDir, 'app.js'));
-        return;
-      }
-
-      if (url.pathname === '/styles.css' && request.method === 'GET') {
-        await serveStatic(response, path.join(publicDir, 'styles.css'));
-        return;
-      }
-
-      if (url.pathname === '/api/health' && request.method === 'GET') {
-        json(response, 200, {
-          ok: true,
-          host: config.host,
-          port: config.port,
-          authRequired: Boolean(config.apiToken),
-        }, corsHeaders);
-        return;
-      }
-
-      if (config.apiToken) {
-        const requestToken = getTokenFromRequest(request);
-        if (!requestToken || requestToken !== config.apiToken) {
-          json(response, 401, { error: 'Unauthorized' }, corsHeaders);
-          return;
-        }
-      }
-
-      if (url.pathname === '/api/tree' && request.method === 'GET') {
-        const tree = await tmuxClient.getTree();
-        json(response, 200, { sessions: tree }, corsHeaders);
-        return;
-      }
-
-      if (url.pathname === '/api/sessions' && request.method === 'GET') {
-        const sessions = await tmuxClient.listSessions();
-        json(response, 200, { sessions }, corsHeaders);
-        return;
-      }
-
-      if (url.pathname === '/api/sessions' && request.method === 'POST') {
-        const body = await readJsonBody(request);
-        const name = validateRequiredString(body.name, 'name');
-        const result = await tmuxClient.createSession(name);
-        json(response, 201, result, corsHeaders);
-        return;
-      }
-
-      if (url.pathname.startsWith('/api/sessions/') && request.method === 'DELETE') {
-        const name = decodeURIComponent(url.pathname.replace('/api/sessions/', ''));
-        const result = await tmuxClient.killSession(name);
-        json(response, 200, result, corsHeaders);
-        return;
-      }
-
-      if (url.pathname === '/api/windows' && request.method === 'POST') {
-        const body = await readJsonBody(request);
-        const sessionName = validateRequiredString(body.sessionName, 'sessionName');
-        const name = validateRequiredString(body.name, 'name');
-        const result = await tmuxClient.createWindow(sessionName, name);
-        json(response, 201, result, corsHeaders);
-        return;
-      }
-
-      if (url.pathname === '/api/commands' && request.method === 'POST') {
-        const body = await readJsonBody(request);
-        const targetPane = validateRequiredString(body.targetPane, 'targetPane');
-        const command = validateRequiredString(body.command, 'command');
-        const enter = body.enter !== false;
-
-        if (command.length > 2048) {
-          json(response, 400, { error: 'command must be 2048 characters or fewer' }, corsHeaders);
-          return;
-        }
-
-        const result = await tmuxClient.sendCommand(targetPane, command, enter);
-        json(response, 200, result, corsHeaders);
-        return;
-      }
-
-      json(response, 404, { error: 'Not found' }, corsHeaders);
-    } catch (error) {
-      const statusCode = error.statusCode ?? 500;
-      json(response, statusCode, { error: error.message || 'Internal server error' }, corsHeaders);
     }
   });
 
-  return { server, config };
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode = error.statusCode ?? 500;
+    reply.code(statusCode).send({ error: error.message || 'Internal server error' });
+  });
+
+  app.register(fastifyStatic, {
+    root: publicDir,
+    prefix: '/',
+    index: ['index.html'],
+  });
+
+  app.get('/api/health', async () => ({
+    ok: true,
+    host: config.host,
+    port: config.port,
+    authRequired: Boolean(config.apiToken),
+  }));
+
+  app.get('/api/tree', async () => {
+    const sessions = await app.tmuxClient.getTree();
+    return { sessions };
+  });
+
+  app.get('/api/sessions', async () => {
+    const sessions = await app.tmuxClient.listSessions();
+    return { sessions };
+  });
+
+  app.post('/api/sessions', async (request, reply) => {
+    const body = await readJsonBody(request);
+    const name = validateRequiredString(body.name, 'name');
+    const result = await app.tmuxClient.createSession(name);
+    reply.code(201);
+    return result;
+  });
+
+  app.delete('/api/sessions/:name', async (request) => {
+    const name = decodeURIComponent(request.params.name);
+    const result = await app.tmuxClient.killSession(name);
+    return result;
+  });
+
+  app.post('/api/windows', async (request, reply) => {
+    const body = await readJsonBody(request);
+    const sessionName = validateRequiredString(body.sessionName, 'sessionName');
+    const name = validateRequiredString(body.name, 'name');
+    const result = await app.tmuxClient.createWindow(sessionName, name);
+    reply.code(201);
+    return result;
+  });
+
+  app.post('/api/commands', async (request) => {
+    const body = await readJsonBody(request);
+    const targetPane = validateRequiredString(body.targetPane, 'targetPane');
+    const command = validateRequiredString(body.command, 'command');
+    const enter = body.enter !== false;
+
+    if (command.length > 2048) {
+      const error = new Error('command must be 2048 characters or fewer');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const result = await app.tmuxClient.sendCommand(targetPane, command, enter);
+    return result;
+  });
+
+  return { app, config };
 }
 
 export async function startServer(options = {}) {
-  const { server, config } = createServer(options);
-
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(config.port, config.host, () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
+  const { app, config } = createApp(options);
+  await app.listen({ port: config.port, host: config.host });
 
   console.log(`tmux-web-console listening on http://${config.host}:${config.port}`);
   console.log(config.apiToken ? 'API token auth is enabled.' : 'API token auth is disabled for local-only access.');
 
-  return { server, config };
+  return { app, config };
 }
 
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === __filename;
