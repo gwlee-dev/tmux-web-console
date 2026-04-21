@@ -181,6 +181,7 @@ function App() {
   const [liveState, setLiveState] = useState<LiveConnectionState>('idle');
   const [searchQuery, setSearchQuery] = useState('');
   const [terminalSize, setTerminalSize] = useState<{ cols: number; rows: number } | null>(null);
+  const [recentPaneIds, setRecentPaneIds] = useState<string[]>([]);
 
   const pendingInputRef = useRef('');
   const pendingInputTimerRef = useRef<number | null>(null);
@@ -234,6 +235,7 @@ function App() {
         setSelectedPaneId(null);
         setLiveSnapshot(null);
         setLiveState('idle');
+        setRecentPaneIds([]);
         setStatus({
           tone: 'secondary',
           message: '로그인이 필요합니다. 아이디와 비밀번호를 입력해주세요.',
@@ -293,6 +295,17 @@ function App() {
       setSelectedPaneId(firstPaneId);
     }
   }, [currentUser, selectedPaneId, selectedPaneMeta, sessions]);
+
+  useEffect(() => {
+    if (!selectedPaneId) {
+      return;
+    }
+
+    setRecentPaneIds((current) => {
+      const next = [selectedPaneId, ...current.filter((paneId) => paneId !== selectedPaneId)];
+      return next.slice(0, 8);
+    });
+  }, [selectedPaneId]);
 
   useEffect(() => {
     if (pendingInputTimerRef.current !== null) {
@@ -430,6 +443,29 @@ function App() {
     }
   }, [selectedPaneId]);
 
+  const recentPanes = useMemo(() => {
+    return recentPaneIds
+      .map((paneId) => {
+        for (const session of sessions) {
+          for (const windowNode of session.windows) {
+            for (const pane of windowNode.panes) {
+              if (pane.id === paneId) {
+                return {
+                  paneId,
+                  sessionName: session.name,
+                  windowLabel: `${windowNode.index}. ${windowNode.name}`,
+                  paneLabel: `패널 ${pane.index}`,
+                };
+              }
+            }
+          }
+        }
+
+        return null;
+      })
+      .filter((entry): entry is { paneId: string; sessionName: string; windowLabel: string; paneLabel: string } => entry !== null);
+  }, [recentPaneIds, sessions]);
+
   const totals = useMemo(() => {
     const windows = sessions.reduce((sum, session) => sum + session.windows.length, 0);
     const panes = sessions.reduce(
@@ -480,6 +516,7 @@ function App() {
       setLiveSnapshot(null);
       setLiveState('idle');
       setCommandInput('');
+      setRecentPaneIds([]);
       setSearchQuery('');
       setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
     } catch (error) {
@@ -804,6 +841,26 @@ function App() {
                       </Button>
                     </div>
                   </div>
+
+                  {recentPanes.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {recentPanes.map((paneEntry) => (
+                        <button
+                          key={paneEntry.paneId}
+                          type="button"
+                          onClick={() => setSelectedPaneId(paneEntry.paneId)}
+                          className={[
+                            'rounded-full border px-3 py-1.5 text-xs transition',
+                            paneEntry.paneId === selectedPaneId
+                              ? 'border-primary bg-primary/10 text-foreground'
+                              : 'border-border/70 bg-background/60 text-muted-foreground hover:border-primary/50 hover:text-foreground',
+                          ].join(' ')}
+                        >
+                          {paneEntry.sessionName} · {paneEntry.windowLabel} · {paneEntry.paneLabel}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
 
                   <TerminalSurface
                     ref={terminalRef}

@@ -36,6 +36,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - 선택한 패널 기준으로 정보/명령/관리 카드가 동작
 - 긴 세션 목록 때문에 페이지 전체를 계속 스크롤하지 않도록 구조 변경
 - 터미널 검색창 / 포커스 버튼 / 크기 표시 제공
+- 최근 선택한 pane 탭바 제공
 
 ## 환경 변수
 
@@ -130,7 +131,7 @@ npm run check
 - 내용이 바뀌면 새 스냅샷을 SSE로 밀어줍니다.
 - 브라우저에서 입력한 키는 `/api/panes/:paneId/input` 으로 전달되어 `tmux send-keys` 로 주입됩니다.
 - xterm 검색은 브라우저 버퍼를 대상으로 동작합니다.
-- 터미널 박스 크기가 바뀌면 `/api/panes/:paneId/resize` 로 현재 cols/rows를 보내서 tmux pane 크기를 맞춥니다.
+- 터미널 박스 크기가 바뀌면 `/api/panes/:paneId/resize` 로 현재 cols/rows를 보내고, 서버는 `window-size manual` + `resize-window` + `resize-pane` 순으로 맞추려고 시도합니다.
 - 현재 버전은 **xterm.js로 렌더링되는 읽기/입력 가능 패널 뷰**이며, PTY를 직접 붙인 완전한 브라우저 셸은 아닙니다.
 
 ## 쿠키 보안 메모
