@@ -1,15 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Command,
-  Eye,
   FolderOpen,
   LoaderCircle,
   LogIn,
   LogOut,
   MonitorSmartphone,
-  PanelsTopLeft,
-  Play,
   Plus,
   RefreshCw,
   Shield,
@@ -18,6 +15,7 @@ import {
   UserRound,
 } from 'lucide-react';
 
+import { TerminalSurface } from '@/components/terminal-surface';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -87,6 +85,7 @@ type PaneSnapshot = {
   lineCount: number;
   historyLines: number;
   capturedAt: string;
+  includesAnsi?: boolean;
 };
 
 type StatusState = {
@@ -96,11 +95,13 @@ type StatusState = {
 
 type LiveConnectionState = 'idle' | 'connecting' | 'live' | 'error';
 
-type FlattenedPane = {
-  pane: Pane;
+type SelectedPaneMeta = {
+  sessionId: string;
   sessionName: string;
-  windowName: string;
+  windowId: string;
   windowIndex: number;
+  windowName: string;
+  pane: Pane;
 };
 
 function summarizeError(error: unknown) {
@@ -171,10 +172,13 @@ function App() {
   const [windowName, setWindowName] = useState('');
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [commandDrafts, setCommandDrafts] = useState<Record<string, string>>({});
+  const [commandInput, setCommandInput] = useState('');
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [liveSnapshot, setLiveSnapshot] = useState<PaneSnapshot | null>(null);
   const [liveState, setLiveState] = useState<LiveConnectionState>('idle');
+
+  const pendingInputRef = useRef('');
+  const pendingInputTimerRef = useRef<number | null>(null);
 
   const apiRequest = useCallback(async <T,>(path: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -238,26 +242,30 @@ function App() {
     void refreshData();
   }, [refreshData]);
 
-  const allPanes = useMemo<FlattenedPane[]>(() => {
-    return sessions.flatMap((session) =>
-      session.windows.flatMap((windowNode) =>
-        windowNode.panes.map((pane) => ({
-          pane,
-          sessionName: session.name,
-          windowName: windowNode.name,
-          windowIndex: windowNode.index,
-        })),
-      ),
-    );
-  }, [sessions]);
-
-  const selectedPaneMeta = useMemo(() => {
+  const selectedPaneMeta = useMemo<SelectedPaneMeta | null>(() => {
     if (!selectedPaneId) {
       return null;
     }
 
-    return allPanes.find((entry) => entry.pane.id === selectedPaneId) ?? null;
-  }, [allPanes, selectedPaneId]);
+    for (const session of sessions) {
+      for (const windowNode of session.windows) {
+        for (const pane of windowNode.panes) {
+          if (pane.id === selectedPaneId) {
+            return {
+              sessionId: session.id,
+              sessionName: session.name,
+              windowId: windowNode.id,
+              windowIndex: windowNode.index,
+              windowName: windowNode.name,
+              pane,
+            };
+          }
+        }
+      }
+    }
+
+    return null;
+  }, [selectedPaneId, sessions]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -267,17 +275,74 @@ function App() {
       return;
     }
 
-    if (allPanes.length === 0) {
-      setSelectedPaneId(null);
-      setLiveSnapshot(null);
-      setLiveState('idle');
+    const firstPaneId = sessions[0]?.windows[0]?.panes[0]?.id ?? null;
+    if (!selectedPaneId && firstPaneId) {
+      setSelectedPaneId(firstPaneId);
       return;
     }
 
-    if (!selectedPaneId || !allPanes.some((entry) => entry.pane.id === selectedPaneId)) {
-      setSelectedPaneId(allPanes[0].pane.id);
+    if (selectedPaneId && !selectedPaneMeta && firstPaneId) {
+      setSelectedPaneId(firstPaneId);
     }
-  }, [allPanes, currentUser, selectedPaneId]);
+  }, [currentUser, selectedPaneId, selectedPaneMeta, sessions]);
+
+  useEffect(() => {
+    if (pendingInputTimerRef.current !== null) {
+      window.clearTimeout(pendingInputTimerRef.current);
+      pendingInputTimerRef.current = null;
+    }
+    pendingInputRef.current = '';
+  }, [selectedPaneId]);
+
+  useEffect(() => {
+    return () => {
+      if (pendingInputTimerRef.current !== null) {
+        window.clearTimeout(pendingInputTimerRef.current);
+      }
+    };
+  }, []);
+
+  const flushPendingInput = useCallback(async () => {
+    if (!selectedPaneId) {
+      pendingInputRef.current = '';
+      return;
+    }
+
+    const inputChunk = pendingInputRef.current;
+    pendingInputRef.current = '';
+    pendingInputTimerRef.current = null;
+
+    if (!inputChunk) {
+      return;
+    }
+
+    try {
+      await apiRequest(`/api/panes/${encodeURIComponent(selectedPaneId)}/input`, {
+        method: 'POST',
+        body: JSON.stringify({ input: inputChunk }),
+      });
+    } catch (error) {
+      setStatus({ tone: 'destructive', message: summarizeError(error) });
+    }
+  }, [apiRequest, selectedPaneId]);
+
+  const queueTerminalInput = useCallback(
+    (data: string) => {
+      if (!selectedPaneId) {
+        return;
+      }
+
+      pendingInputRef.current += data;
+      if (pendingInputTimerRef.current !== null) {
+        return;
+      }
+
+      pendingInputTimerRef.current = window.setTimeout(() => {
+        void flushPendingInput();
+      }, 25);
+    },
+    [flushPendingInput, selectedPaneId],
+  );
 
   useEffect(() => {
     if (!currentUser || !selectedPaneId) {
@@ -285,6 +350,7 @@ function App() {
     }
 
     setLiveState('connecting');
+    setLiveSnapshot(null);
 
     const source = new EventSource(`/api/panes/${encodeURIComponent(selectedPaneId)}/stream`);
 
@@ -302,13 +368,11 @@ function App() {
       }
     };
 
-    const handleError = () => {
-      setLiveState('error');
-    };
-
     source.addEventListener('snapshot', handleSnapshot as EventListener);
     source.addEventListener('stream-error', handleStreamError as EventListener);
-    source.onerror = handleError;
+    source.onerror = () => {
+      setLiveState('error');
+    };
 
     return () => {
       source.removeEventListener('snapshot', handleSnapshot as EventListener);
@@ -363,10 +427,10 @@ function App() {
       await apiRequest('/api/logout', { method: 'POST' });
       setCurrentUser(null);
       setSessions([]);
-      setCommandDrafts({});
       setSelectedPaneId(null);
       setLiveSnapshot(null);
       setLiveState('idle');
+      setCommandInput('');
       setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
@@ -443,25 +507,30 @@ function App() {
     }
   };
 
-  const sendCommand = async (paneId: string) => {
-    const command = (commandDrafts[paneId] ?? '').trim();
+  const sendCommand = async () => {
+    if (!selectedPaneId) {
+      setStatus({ tone: 'destructive', message: '왼쪽 목록에서 패널을 먼저 선택해주세요.' });
+      return;
+    }
+
+    const command = commandInput.trim();
     if (!command) {
       setStatus({ tone: 'destructive', message: '보낼 명령어를 입력해주세요.' });
       return;
     }
 
-    setBusyKey(`command:${paneId}`);
+    setBusyKey(`command:${selectedPaneId}`);
     try {
       await apiRequest('/api/commands', {
         method: 'POST',
         body: JSON.stringify({
-          targetPane: paneId,
+          targetPane: selectedPaneId,
           command,
           enter: true,
         }),
       });
-      setCommandDrafts((current) => ({ ...current, [paneId]: '' }));
-      setStatus({ tone: 'default', message: `${paneId} 패널에 명령어를 전송했습니다.` });
+      setCommandInput('');
+      setStatus({ tone: 'default', message: `${selectedPaneId} 패널에 명령어를 전송했습니다.` });
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
     } finally {
@@ -475,27 +544,24 @@ function App() {
 
   return (
     <div className="dark min-h-svh bg-background text-foreground">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <section className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
+      <div className="mx-auto flex max-w-[1600px] flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <section className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
           <Card className="border border-border/70 bg-gradient-to-br from-card via-card to-primary/10">
             <CardHeader>
               <Badge variant="secondary" className="mb-2">
-                인증 기반 원격 제어
+                tmux 원격 워크스페이스
               </Badge>
-              <CardTitle className="text-3xl">tmux 웹 콘솔</CardTitle>
-              <CardDescription className="max-w-2xl text-sm leading-6">
-                브라우저에서 세션, 창, 패널을 확인하고 명령어를 보낼 수 있는 React + shadcn/ui 기반 관리 화면입니다.
-                이제 API 토큰 대신 아이디/비밀번호 로그인과 HttpOnly 세션 쿠키를 사용합니다.
+              <CardTitle className="text-3xl">왼쪽에서 선택하고 오른쪽에서 작업하는 콘솔</CardTitle>
+              <CardDescription className="max-w-3xl text-sm leading-6">
+                세션/창/패널 목록은 왼쪽 트리에만 모으고, 오른쪽은 실제 터미널 뷰와 작업 영역으로 유지했습니다.
+                이제 긴 세션 목록 때문에 페이지 전체를 계속 스크롤할 필요가 없습니다.
               </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-3 md:grid-cols-3">
+            <CardContent className="grid gap-3 md:grid-cols-4">
               <OverviewCard icon={MonitorSmartphone} label="접속 대상" value={health ? `${health.host}:${health.port}` : '확인 중'} />
-              <OverviewCard icon={Shield} label="인증 방식" value="Credential 로그인" />
-              <OverviewCard
-                icon={Activity}
-                label="실시간 스트림"
-                value={health ? `${health.paneStreamIntervalMs}ms 주기` : '확인 중'}
-              />
+              <OverviewCard icon={Shield} label="인증" value="Credential + 세션 쿠키" />
+              <OverviewCard icon={Activity} label="라이브 갱신" value={health ? `${health.paneStreamIntervalMs}ms` : '확인 중'} />
+              <OverviewCard icon={SquareTerminal} label="패널 보관 줄 수" value={health ? `${health.paneHistoryLines}줄` : '확인 중'} />
             </CardContent>
           </Card>
 
@@ -510,12 +576,13 @@ function App() {
                 </Button>
               </CardAction>
             </CardHeader>
-            <CardContent className="flex flex-col gap-3">
+            <CardContent className="space-y-3">
               <Badge variant={statusVariant}>{status.tone === 'destructive' ? '오류' : '안내'}</Badge>
               <p className="text-sm leading-6 text-muted-foreground">{status.message}</p>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <UserRound className="size-4" />
-                {currentUser ? `${currentUser} 계정으로 로그인됨` : '로그인되지 않음'}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <MiniMetric label="세션" value={`${sessions.length}`} />
+                <MiniMetric label="창" value={`${totals.windows}`} />
+                <MiniMetric label="패널" value={`${totals.panes}`} />
               </div>
             </CardContent>
           </Card>
@@ -529,21 +596,14 @@ function App() {
                 <CardDescription>서버에 설정한 아이디와 비밀번호로 로그인하세요.</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                <div className="grid gap-3">
-                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                    아이디
-                    <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" />
-                  </label>
-                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                    비밀번호
-                    <Input
-                      type="password"
-                      value={loginPassword}
-                      onChange={(event) => setLoginPassword(event.target.value)}
-                      placeholder="비밀번호 입력"
-                    />
-                  </label>
-                </div>
+                <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                  아이디
+                  <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" />
+                </label>
+                <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                  비밀번호
+                  <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" />
+                </label>
                 <Button onClick={() => void login()} disabled={busyKey === 'login'}>
                   {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
                   로그인
@@ -553,275 +613,190 @@ function App() {
 
             <Card>
               <CardHeader>
-                <CardTitle>보안 메모</CardTitle>
-                <CardDescription>현재 로그인 방식에서 알아두면 좋은 점입니다.</CardDescription>
+                <CardTitle>이번 레이아웃 변경</CardTitle>
+                <CardDescription>스크롤 피로를 줄이기 위해 구조를 바꿨습니다.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-                <p>로그인에 성공하면 JavaScript에서 읽을 수 없는 HttpOnly 세션 쿠키가 발급됩니다.</p>
-                <p>운영 환경에서 HTTPS를 붙였다면 <code>COOKIE_SECURE=true</code> 로 Secure 쿠키를 꼭 켜는 것을 권장합니다.</p>
-                <p>로그인 후에는 패널 출력을 실시간으로 확인할 수 있습니다.</p>
+                <p>왼쪽은 세션/창/패널 탐색 전용 스크롤 영역입니다.</p>
+                <p>오른쪽은 선택한 패널의 실제 터미널 뷰와 작업 카드가 고정됩니다.</p>
+                <p>로그인 후에는 xterm.js 기반 입력/출력 UI를 바로 사용할 수 있습니다.</p>
               </CardContent>
             </Card>
           </section>
         ) : (
-          <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <StatCard icon={SquareTerminal} label="세션" value={`${sessions.length}개`} detail="현재 불러온 tmux 세션 수" />
-              <StatCard icon={PanelsTopLeft} label="창" value={`${totals.windows}개`} detail="모든 세션의 창 수 합계" />
-              <StatCard icon={Command} label="패널" value={`${totals.panes}개`} detail="명령어를 보낼 수 있는 패널 수" />
-              <StatCard icon={Activity} label="붙은 클라이언트" value={`${totals.attached}개`} detail="tmux에 현재 붙어 있는 클라이언트 수" />
-            </section>
-
-            <section className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-              <Card>
-                <CardHeader>
-                  <CardTitle>실시간 패널 보기</CardTitle>
-                  <CardDescription>
-                    선택한 패널의 최근 출력 {health?.paneHistoryLines ?? 200}줄을 {health?.paneStreamIntervalMs ?? 1000}ms 주기로 갱신합니다.
-                  </CardDescription>
-                  <CardAction>
-                    <Badge variant={liveVariant}>
-                      {liveState === 'live'
-                        ? '실시간 연결 중'
-                        : liveState === 'connecting'
-                          ? '연결 중'
-                          : liveState === 'error'
-                            ? '연결 오류'
-                            : '대기 중'}
-                    </Badge>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {selectedPaneMeta ? (
-                    <>
-                      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                        <Eye className="size-4" />
-                        {selectedPaneMeta.sessionName} / {selectedPaneMeta.windowIndex}. {selectedPaneMeta.windowName} / {selectedPaneMeta.pane.id}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <Badge variant="outline">{selectedPaneMeta.pane.currentCommand || '셸'}</Badge>
-                        <span>마지막 캡처: {formatCapturedAt(liveSnapshot?.capturedAt)}</span>
-                        <span>줄 수: {liveSnapshot?.lineCount ?? 0}</span>
-                      </div>
-                      <div className="max-h-[28rem] overflow-auto rounded-xl border border-border/70 bg-black/70 p-4">
-                        <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-emerald-200">
-                          {liveSnapshot?.content || '아직 표시할 출력이 없습니다.'}
-                        </pre>
-                      </div>
-                    </>
+          <section className="grid min-h-0 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <Card className="min-h-[75vh] overflow-hidden lg:sticky lg:top-4 lg:h-[calc(100svh-2rem)]">
+              <CardHeader>
+                <CardTitle>세션 트리</CardTitle>
+                <CardDescription>왼쪽에서 패널을 선택하면 오른쪽 터미널이 즉시 바뀝니다.</CardDescription>
+              </CardHeader>
+              <CardContent className="h-[calc(100%-5rem)] overflow-auto pr-2">
+                <div className="grid gap-3">
+                  {sessions.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-border/80 p-4 text-sm text-muted-foreground">
+                      세션이 없습니다.
+                    </div>
                   ) : (
-                    <div className="rounded-xl border border-dashed border-border/80 p-6 text-sm text-muted-foreground">
-                      실시간으로 볼 패널을 하나 선택해주세요.
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>로그인 정보</CardTitle>
-                  <CardDescription>현재 로그인한 계정과 세션 상태입니다.</CardDescription>
-                  <CardAction>
-                    <Button variant="outline" size="sm" onClick={() => void logout()} disabled={busyKey === 'logout'}>
-                      {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
-                      로그아웃
-                    </Button>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="rounded-xl border border-border/70 bg-background/60 p-4">
-                    <div className="mb-2 flex items-center gap-2 text-muted-foreground">
-                      <UserRound className="size-4" /> 계정
-                    </div>
-                    <div className="text-lg font-semibold">{currentUser}</div>
-                  </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    세션 쿠키는 HttpOnly로 발급되며 브라우저 JavaScript에서는 직접 읽을 수 없습니다.
-                  </p>
-                </CardContent>
-              </Card>
-            </section>
-
-            <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr_1fr]">
-              <Card>
-                <CardHeader>
-                  <CardTitle>세션 만들기</CardTitle>
-                  <CardDescription>새 tmux 세션을 즉시 생성합니다.</CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  <Input
-                    placeholder="예: dev-api"
-                    value={sessionName}
-                    onChange={(event) => setSessionName(event.target.value)}
-                  />
-                  <Button onClick={() => void createSession()} disabled={busyKey === 'create-session'}>
-                    <Plus className="size-4" /> 세션 생성
-                  </Button>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>창 만들기</CardTitle>
-                  <CardDescription>기존 세션 안에 새 창을 추가합니다.</CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  <Input
-                    placeholder="세션 이름"
-                    value={windowSessionName}
-                    onChange={(event) => setWindowSessionName(event.target.value)}
-                  />
-                  <Input
-                    placeholder="창 이름"
-                    value={windowName}
-                    onChange={(event) => setWindowName(event.target.value)}
-                  />
-                  <Button onClick={() => void createWindow()} disabled={busyKey === 'create-window'}>
-                    <Plus className="size-4" /> 창 생성
-                  </Button>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>실시간 보기 팁</CardTitle>
-                  <CardDescription>패널 출력은 오른쪽 대시보드가 아니라 위 카드에서 집중해서 볼 수 있습니다.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-                  <p>각 패널 카드에서 <strong>실시간 보기</strong> 버튼을 누르면 위 라이브 뷰어가 해당 패널로 바뀝니다.</p>
-                  <p>명령을 보내고 잠시 기다리면 같은 패널의 출력이 자동으로 갱신됩니다.</p>
-                  <p>현재는 읽기 전용 라이브 뷰이며, 진짜 터미널 입력 포커스는 아직 별도 구현 전입니다.</p>
-                </CardContent>
-              </Card>
-            </section>
-
-            <section className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1">
-                <h2 className="text-2xl font-semibold">세션 목록</h2>
-                <p className="text-sm text-muted-foreground">세션, 창, 패널 정보를 한 번에 보고 명령어를 바로 보낼 수 있습니다.</p>
-              </div>
-
-              {sessions.length === 0 ? (
-                <Card>
-                  <CardContent className="py-10 text-center text-muted-foreground">
-                    아직 표시할 세션이 없습니다. 새로고침하거나 새 세션을 만들어보세요.
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="grid gap-4">
-                  {sessions.map((session) => (
-                    <Card key={session.id} className="overflow-visible">
-                      <CardHeader>
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <CardTitle className="text-xl">{session.name}</CardTitle>
-                              <Badge variant="outline">창 {session.windows.length}개</Badge>
-                              <Badge variant={session.attached > 0 ? 'default' : 'secondary'}>붙음 {session.attached}개</Badge>
-                            </div>
-                            <CardDescription>
-                              세션 ID {session.id} · 원격으로 세션 종료, 창 생성, 패널 명령 전송이 가능합니다.
-                            </CardDescription>
+                    sessions.map((session) => (
+                      <div key={session.id} className="rounded-xl border border-border/70 bg-background/40 p-3">
+                        <div className="mb-3 flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-semibold">{session.name}</div>
+                            <div className="text-xs text-muted-foreground">창 {session.windows.length}개 · 붙음 {session.attached}개</div>
                           </div>
                           <Button
-                            variant="destructive"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => void killSession(session.name)}
                             disabled={busyKey === `kill:${session.name}`}
                           >
-                            <Trash2 className="size-4" /> 세션 종료
+                            <Trash2 className="size-4" />
                           </Button>
                         </div>
-                      </CardHeader>
-                      <CardContent className="flex flex-col gap-4">
-                        {session.windows.length === 0 ? (
-                          <div className="rounded-xl border border-dashed border-border/80 p-6 text-sm text-muted-foreground">
-                            아직 창이 없습니다.
-                          </div>
-                        ) : (
-                          session.windows.map((windowNode) => (
-                            <div key={windowNode.id} className="rounded-2xl border border-border/80 bg-background/60 p-4">
-                              <div className="mb-4 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+
+                        <div className="grid gap-2">
+                          {session.windows.map((windowNode) => (
+                            <div key={windowNode.id} className="rounded-lg border border-border/60 bg-card/70 p-2">
+                              <div className="mb-2 flex items-center justify-between gap-2">
                                 <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <h3 className="text-lg font-semibold">
-                                      {windowNode.index}. {windowNode.name}
-                                    </h3>
-                                    {windowNode.active ? <Badge>활성 창</Badge> : <Badge variant="secondary">비활성 창</Badge>}
+                                  <div className="text-sm font-medium">
+                                    {windowNode.index}. {windowNode.name}
                                   </div>
-                                  <p className="mt-1 text-sm text-muted-foreground">창 ID {windowNode.id} · 패널 {windowNode.panes.length}개</p>
+                                  <div className="text-xs text-muted-foreground">패널 {windowNode.panes.length}개</div>
                                 </div>
+                                {windowNode.active ? <Badge>활성</Badge> : <Badge variant="secondary">대기</Badge>}
                               </div>
 
-                              <div className="grid gap-3 xl:grid-cols-2">
-                                {windowNode.panes.map((pane, paneIndex) => {
-                                  const isWatching = selectedPaneId === pane.id;
+                              <div className="grid gap-2">
+                                {windowNode.panes.map((pane) => {
+                                  const selected = pane.id === selectedPaneId;
                                   return (
-                                    <div key={pane.id} className="rounded-xl border border-border/70 bg-card/80 p-4">
-                                      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-                                        <div className="space-y-2">
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <span className="text-base font-semibold">패널 {pane.index}</span>
-                                            {pane.active ? <Badge>활성 패널</Badge> : <Badge variant="secondary">대기 중</Badge>}
-                                            {isWatching ? <Badge variant="outline">현재 보고 있음</Badge> : null}
-                                          </div>
-                                          <div className="space-y-1 text-sm text-muted-foreground">
-                                            <div className="flex items-center gap-2">
-                                              <Command className="size-4" /> {pane.currentCommand || '셸'}
-                                            </div>
-                                            <div className="flex items-center gap-2 break-all">
-                                              <FolderOpen className="size-4" /> {pane.currentPath || '-'}
-                                            </div>
-                                            <div className="text-xs text-muted-foreground/90">{pane.title || pane.id}</div>
-                                          </div>
-                                        </div>
-                                        <div className="flex flex-col items-end gap-2">
-                                          <Badge variant="outline">{pane.id}</Badge>
-                                          <Button variant={isWatching ? 'secondary' : 'outline'} size="sm" onClick={() => setSelectedPaneId(pane.id)}>
-                                            <Play className="size-4" /> 실시간 보기
-                                          </Button>
-                                        </div>
+                                    <button
+                                      key={pane.id}
+                                      type="button"
+                                      onClick={() => setSelectedPaneId(pane.id)}
+                                      className={[
+                                        'rounded-lg border px-3 py-2 text-left transition',
+                                        selected
+                                          ? 'border-primary bg-primary/10 ring-1 ring-primary/50'
+                                          : 'border-border/70 bg-background/60 hover:border-primary/50 hover:bg-background',
+                                      ].join(' ')}
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-sm font-medium">패널 {pane.index}</span>
+                                        <Badge variant={pane.active ? 'default' : 'outline'}>{pane.id}</Badge>
                                       </div>
-
-                                      <Separator className="mb-3" />
-
-                                      <div className="flex flex-col gap-3">
-                                        <Textarea
-                                          placeholder="예: npm run dev"
-                                          value={commandDrafts[pane.id] ?? ''}
-                                          onChange={(event) =>
-                                            setCommandDrafts((current) => ({
-                                              ...current,
-                                              [pane.id]: event.target.value,
-                                            }))
-                                          }
-                                        />
-                                        <div className="flex justify-end">
-                                          <Button onClick={() => void sendCommand(pane.id)} disabled={busyKey === `command:${pane.id}`}>
-                                            {busyKey === `command:${pane.id}` ? (
-                                              <LoaderCircle className="size-4 animate-spin" />
-                                            ) : (
-                                              <Command className="size-4" />
-                                            )}
-                                            명령 전송
-                                          </Button>
-                                        </div>
-                                      </div>
-
-                                      {paneIndex < windowNode.panes.length - 1 ? <Separator className="mt-3 xl:hidden" /> : null}
-                                    </div>
+                                      <div className="mt-1 text-xs text-muted-foreground">{pane.currentCommand || '셸'} · {pane.currentPath || '-'}</div>
+                                    </button>
                                   );
                                 })}
                               </div>
                             </div>
-                          ))
-                        )}
-                      </CardContent>
-                    </Card>
-                  ))}
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
-              )}
-            </section>
-          </>
+              </CardContent>
+            </Card>
+
+            <div className="grid min-h-0 gap-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>터미널</CardTitle>
+                  <CardDescription>
+                    선택한 패널 출력이 xterm.js로 렌더링됩니다. 키 입력도 선택한 패널로 전달됩니다.
+                  </CardDescription>
+                  <CardAction>
+                    <Badge variant={liveVariant}>
+                      {liveState === 'live' ? '실시간 연결 중' : liveState === 'connecting' ? '연결 중' : liveState === 'error' ? '연결 오류' : '대기 중'}
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <Badge variant="outline">{selectedPaneMeta?.pane.id ?? '패널 미선택'}</Badge>
+                    <span>{selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowIndex}. ${selectedPaneMeta.windowName}` : '왼쪽에서 패널을 선택해주세요.'}</span>
+                    <span>마지막 캡처: {formatCapturedAt(liveSnapshot?.capturedAt)}</span>
+                    <span>줄 수: {liveSnapshot?.lineCount ?? 0}</span>
+                  </div>
+                  <TerminalSurface
+                    snapshot={liveSnapshot}
+                    selectedPaneId={selectedPaneId}
+                    statusMessage={selectedPaneId ? '패널 출력 연결 중...' : '왼쪽 목록에서 패널을 선택해주세요.'}
+                    onInput={queueTerminalInput}
+                  />
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4 xl:grid-cols-[1fr_1fr_1.1fr]">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>현재 패널 정보</CardTitle>
+                    <CardDescription>오른쪽 작업 영역은 선택한 패널 기준으로 동작합니다.</CardDescription>
+                    <CardAction>
+                      <Button variant="outline" size="sm" onClick={() => void logout()} disabled={busyKey === 'logout'}>
+                        {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
+                        로그아웃
+                      </Button>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <InfoRow icon={UserRound} label="계정" value={currentUser ?? '-'} />
+                    <InfoRow icon={SquareTerminal} label="패널" value={selectedPaneMeta?.pane.id ?? '-'} />
+                    <InfoRow icon={Command} label="프로세스" value={selectedPaneMeta?.pane.currentCommand || '셸'} />
+                    <InfoRow icon={FolderOpen} label="경로" value={selectedPaneMeta?.pane.currentPath || '-'} />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>세션/창 생성</CardTitle>
+                    <CardDescription>터미널 아래에서 관리 작업을 빠르게 처리합니다.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">세션 만들기</div>
+                      <Input placeholder="예: dev-api" value={sessionName} onChange={(event) => setSessionName(event.target.value)} />
+                      <Button onClick={() => void createSession()} disabled={busyKey === 'create-session'}>
+                        <Plus className="size-4" /> 세션 생성
+                      </Button>
+                    </div>
+                    <Separator />
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">창 만들기</div>
+                      <Input placeholder="세션 이름" value={windowSessionName} onChange={(event) => setWindowSessionName(event.target.value)} />
+                      <Input placeholder="창 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
+                      <Button onClick={() => void createWindow()} disabled={busyKey === 'create-window'}>
+                        <Plus className="size-4" /> 창 생성
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>선택 패널에 명령 보내기</CardTitle>
+                    <CardDescription>
+                      긴 명령이나 붙여넣기는 여기서 보내고, 짧은 입력은 위 터미널에 직접 타이핑하면 됩니다.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Textarea
+                      placeholder="예: npm run dev"
+                      value={commandInput}
+                      onChange={(event) => setCommandInput(event.target.value)}
+                    />
+                    <Button onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
+                      {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <Command className="size-4" />}
+                      명령 전송
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          </section>
         )}
       </div>
     </div>
@@ -845,27 +820,34 @@ function OverviewCard({ icon: Icon, label, value }: OverviewCardProps) {
   );
 }
 
-type StatCardProps = {
+type MiniMetricProps = {
+  label: string;
+  value: string;
+};
+
+function MiniMetric({ label, value }: MiniMetricProps) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/50 px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+type InfoRowProps = {
   icon: typeof Activity;
   label: string;
   value: string;
-  detail: string;
 };
 
-function StatCard({ icon: Icon, label, value, detail }: StatCardProps) {
+function InfoRow({ icon: Icon, label, value }: InfoRowProps) {
   return (
-    <Card size="sm">
-      <CardContent className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="text-sm text-muted-foreground">{label}</div>
-          <div className="text-2xl font-semibold">{value}</div>
-          <div className="text-xs leading-5 text-muted-foreground">{detail}</div>
-        </div>
-        <div className="rounded-xl border border-border/80 bg-background/70 p-2 text-primary">
-          <Icon className="size-5" />
-        </div>
-      </CardContent>
-    </Card>
+    <div className="rounded-xl border border-border/70 bg-background/60 p-3">
+      <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+        <Icon className="size-4" /> {label}
+      </div>
+      <div className="break-all text-sm font-medium">{value}</div>
+    </div>
   );
 }
 

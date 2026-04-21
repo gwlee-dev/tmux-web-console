@@ -194,6 +194,16 @@ function validateRequiredString(value, fieldName) {
   return value.trim();
 }
 
+function validateNonEmptyRawString(value, fieldName) {
+  if (typeof value !== 'string' || value.length === 0) {
+    const error = new Error(`${fieldName} is required`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return value;
+}
+
 function createConfig(overrides = {}) {
   const host = overrides.host ?? process.env.HOST ?? '127.0.0.1';
   const port = Number(overrides.port ?? process.env.PORT ?? 4317);
@@ -238,7 +248,7 @@ function createConfig(overrides = {}) {
 }
 
 async function getPaneSnapshot(tmuxClient, paneId, historyLines) {
-  return tmuxClient.capturePane(paneId, historyLines);
+  return tmuxClient.capturePane(paneId, historyLines, { includeAnsi: true });
 }
 
 export function createApp({
@@ -345,6 +355,20 @@ export function createApp({
     return getPaneSnapshot(app.tmuxClient, paneId, historyLines);
   });
 
+  app.post('/api/panes/:paneId/input', async (request) => {
+    const paneId = request.params.paneId;
+    const body = await readJsonBody(request);
+    const input = validateNonEmptyRawString(body.input, 'input');
+
+    if (input.length > 4096) {
+      const error = new Error('input must be 4096 characters or fewer');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return app.tmuxClient.sendInput(paneId, input);
+  });
+
   app.get('/api/panes/:paneId/stream', async (request, reply) => {
     const paneId = request.params.paneId;
     const historyLines = parsePositiveInteger(request.query?.lines, config.paneHistoryLines);
@@ -358,6 +382,7 @@ export function createApp({
     });
 
     let lastPayload = '';
+    let closed = false;
 
     const writeEvent = (eventName, payload) => {
       reply.raw.write(`event: ${eventName}\n`);
@@ -385,8 +410,6 @@ export function createApp({
     const heartbeatId = setInterval(() => {
       reply.raw.write(': keep-alive\n\n');
     }, 15000);
-
-    let closed = false;
 
     const cleanup = () => {
       if (closed) {

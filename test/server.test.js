@@ -18,6 +18,9 @@ function buildTestApp(overrides = {}) {
               panes: [
                 {
                   id: '%1',
+                  index: 0,
+                  active: true,
+                  title: 'editor',
                   currentCommand: 'zsh',
                   currentPath: '/tmp',
                 },
@@ -33,10 +36,11 @@ function buildTestApp(overrides = {}) {
     async capturePane(targetPane, historyLines = 200) {
       return {
         targetPane,
-        content: 'line one\nline two',
+        content: '\u001b[32mline one\u001b[0m\nline two',
         lineCount: 2,
         historyLines,
         capturedAt: '2026-04-21T03:00:00.000Z',
+        includesAnsi: true,
       };
     },
     async createSession(name) {
@@ -50,6 +54,9 @@ function buildTestApp(overrides = {}) {
     },
     async sendCommand(targetPane, command, enter) {
       return { ok: true, targetPane, command, enter };
+    },
+    async sendInput(targetPane, input) {
+      return { ok: true, targetPane, inputLength: input.length };
     },
   };
 
@@ -145,10 +152,36 @@ test('pane snapshot endpoint returns captured pane output after login', async (t
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), {
     targetPane: '%1',
-    content: 'line one\nline two',
+    content: '\u001b[32mline one\u001b[0m\nline two',
     lineCount: 2,
     historyLines: 120,
     capturedAt: '2026-04-21T03:00:00.000Z',
+    includesAnsi: true,
+  });
+});
+
+test('pane input endpoint forwards terminal keystrokes after login', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
+
+  const cookieHeader = await loginAndGetCookie(app);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/panes/%251/input',
+    headers: {
+      cookie: cookieHeader,
+      'content-type': 'application/json',
+    },
+    payload: {
+      input: 'ls\r',
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    targetPane: '%1',
+    inputLength: 3,
   });
 });
 
