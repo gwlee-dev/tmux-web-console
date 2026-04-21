@@ -7,7 +7,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - **백엔드**: Fastify
 - **프론트엔드**: React + Vite
 - **UI**: shadcn/ui + Tailwind CSS v4
-- **터미널 렌더링**: xterm.js + `@xterm/addon-fit`
+- **터미널 렌더링**: xterm.js + `@xterm/addon-fit` + `@xterm/addon-search`
 - **인증**: 아이디/비밀번호 로그인 + HttpOnly 세션 쿠키
 - **실시간 보기**: tmux pane 캡처 + SSE 스트리밍
 - **tmux 브리지**: `execFile('tmux', args)` 기반
@@ -19,6 +19,8 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - 우측 xterm.js 터미널 보기
 - 선택한 패널 출력 실시간 보기
 - 선택한 패널에 직접 키 입력 전달
+- 터미널 영역 크기 변경 시 tmux pane 크기 동기화
+- 터미널 버퍼 검색 / 다음 / 이전 이동
 - 세션 목록 조회
 - 세션 생성
 - 창 생성
@@ -33,6 +35,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - xterm.js 기반 터미널 스타일 렌더링
 - 선택한 패널 기준으로 정보/명령/관리 카드가 동작
 - 긴 세션 목록 때문에 페이지 전체를 계속 스크롤하지 않도록 구조 변경
+- 터미널 검색창 / 포커스 버튼 / 크기 표시 제공
 
 ## 환경 변수
 
@@ -112,6 +115,7 @@ npm run check
 - `GET /api/tree`
 - `GET /api/panes/:paneId`
 - `POST /api/panes/:paneId/input`
+- `POST /api/panes/:paneId/resize`
 - `GET /api/panes/:paneId/stream`
 - `GET /api/sessions`
 - `POST /api/sessions`
@@ -125,6 +129,8 @@ npm run check
 - 브라우저는 `EventSource` 로 `/api/panes/:paneId/stream` 에 연결합니다.
 - 내용이 바뀌면 새 스냅샷을 SSE로 밀어줍니다.
 - 브라우저에서 입력한 키는 `/api/panes/:paneId/input` 으로 전달되어 `tmux send-keys` 로 주입됩니다.
+- xterm 검색은 브라우저 버퍼를 대상으로 동작합니다.
+- 터미널 박스 크기가 바뀌면 `/api/panes/:paneId/resize` 로 현재 cols/rows를 보내서 tmux pane 크기를 맞춥니다.
 - 현재 버전은 **xterm.js로 렌더링되는 읽기/입력 가능 패널 뷰**이며, PTY를 직접 붙인 완전한 브라우저 셸은 아닙니다.
 
 ## 쿠키 보안 메모

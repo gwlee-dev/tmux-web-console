@@ -204,6 +204,16 @@ function validateNonEmptyRawString(value, fieldName) {
   return value;
 }
 
+function validatePositiveIntegerField(value, fieldName) {
+  if (!Number.isInteger(value) || value <= 0) {
+    const error = new Error(`${fieldName} must be a positive integer`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return value;
+}
+
 function createConfig(overrides = {}) {
   const host = overrides.host ?? process.env.HOST ?? '127.0.0.1';
   const port = Number(overrides.port ?? process.env.PORT ?? 4317);
@@ -367,6 +377,15 @@ export function createApp({
     }
 
     return app.tmuxClient.sendInput(paneId, input);
+  });
+
+  app.post('/api/panes/:paneId/resize', async (request) => {
+    const paneId = request.params.paneId;
+    const body = await readJsonBody(request);
+    const cols = validatePositiveIntegerField(body.cols, 'cols');
+    const rows = validatePositiveIntegerField(body.rows, 'rows');
+
+    return app.tmuxClient.resizePane(paneId, cols, rows);
   });
 
   app.get('/api/panes/:paneId/stream', async (request, reply) => {

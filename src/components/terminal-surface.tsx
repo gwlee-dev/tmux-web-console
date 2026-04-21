@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import { Terminal } from '@xterm/xterm';
 
 type PaneSnapshot = {
@@ -16,6 +17,14 @@ type TerminalSurfaceProps = {
   selectedPaneId: string | null;
   statusMessage?: string;
   onInput: (data: string) => void;
+  onResize?: (size: { cols: number; rows: number }) => void;
+};
+
+export type TerminalSurfaceHandle = {
+  focus: () => void;
+  fit: () => { cols: number; rows: number } | null;
+  findNext: (query: string) => boolean;
+  findPrevious: (query: string) => boolean;
 };
 
 function renderSnapshot(terminal: Terminal, snapshot: PaneSnapshot | null, fallbackMessage: string) {
@@ -29,13 +38,55 @@ function renderSnapshot(terminal: Terminal, snapshot: PaneSnapshot | null, fallb
   terminal.write(snapshot.content);
 }
 
-export function TerminalSurface({ snapshot, selectedPaneId, statusMessage, onInput }: TerminalSurfaceProps) {
+export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(function TerminalSurface(
+  { snapshot, selectedPaneId, statusMessage, onInput, onResize },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
 
   onInputRef.current = onInput;
+  onResizeRef.current = onResize;
+
+  const runFit = () => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) {
+      return null;
+    }
+
+    fitAddon.fit();
+    const size = { cols: terminal.cols, rows: terminal.rows };
+    onResizeRef.current?.(size);
+    return size;
+  };
+
+  useImperativeHandle(ref, () => ({
+    focus() {
+      terminalRef.current?.focus();
+    },
+    fit() {
+      return runFit();
+    },
+    findNext(query: string) {
+      if (!query) {
+        return false;
+      }
+
+      return searchAddonRef.current?.findNext(query) ?? false;
+    },
+    findPrevious(query: string) {
+      if (!query) {
+        return false;
+      }
+
+      return searchAddonRef.current?.findPrevious(query) ?? false;
+    },
+  }));
 
   useEffect(() => {
     const container = containerRef.current;
@@ -50,6 +101,7 @@ export function TerminalSurface({ snapshot, selectedPaneId, statusMessage, onInp
       fontFamily: 'ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace',
       convertEol: false,
       allowTransparency: true,
+      scrollback: 5000,
       theme: {
         background: '#050816',
         foreground: '#d4e4ff',
@@ -75,40 +127,44 @@ export function TerminalSurface({ snapshot, selectedPaneId, statusMessage, onInp
       },
     });
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(searchAddon);
     terminal.open(container);
-    fitAddon.fit();
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
+    runFit();
 
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
+      runFit();
     });
     resizeObserver.observe(container);
 
-    const disposable = terminal.onData((data) => {
+    const inputDisposable = terminal.onData((data) => {
       onInputRef.current(data);
     });
 
     return () => {
-      disposable.dispose();
+      inputDisposable.dispose();
       resizeObserver.disconnect();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      searchAddonRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const terminal = terminalRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon) {
+    if (!terminal) {
       return;
     }
 
-    fitAddon.fit();
+    runFit();
     renderSnapshot(terminal, snapshot, statusMessage ?? '왼쪽 목록에서 패널을 선택해주세요.');
+    terminal.focus();
   }, [selectedPaneId, snapshot, statusMessage]);
 
-  return <div ref={containerRef} className="h-[34rem] w-full rounded-xl bg-[#050816] p-2" />;
-}
+  return <div ref={containerRef} className="h-[40rem] w-full rounded-xl bg-[#050816] p-2" />;
+});
