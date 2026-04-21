@@ -1,13 +1,14 @@
 import Fastify from 'fastify';
-import fastifyStatic from '@fastify/static';
+import FastifyVite from '@fastify/vite';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { acceptWebSocketUpgrade, createTmuxPtyBridge, rejectWebSocketUpgrade } from './pty-websocket.js';
 import tmux from './tmux.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const distDir = path.resolve(__dirname, '../dist');
+const projectRoot = path.resolve(__dirname, '..');
 const SESSION_COOKIE_NAME = 'tmux_web_console_session';
 
 function isLocalHost(host) {
@@ -217,10 +218,11 @@ function validatePositiveIntegerField(value, fieldName) {
 function createConfig(overrides = {}) {
   const host = overrides.host ?? process.env.HOST ?? '127.0.0.1';
   const port = Number(overrides.port ?? process.env.PORT ?? 4317);
+  const dev = overrides.dev ?? process.argv.includes('--dev');
   const corsOrigin = overrides.corsOrigin ?? process.env.CORS_ORIGIN ?? '*';
-  const authUsername = overrides.authUsername ?? process.env.AUTH_USERNAME ?? '';
-  const authPassword = overrides.authPassword ?? process.env.AUTH_PASSWORD ?? '';
-  const sessionSecret = overrides.sessionSecret ?? process.env.SESSION_SECRET ?? '';
+  const authUsername = overrides.authUsername ?? process.env.AUTH_USERNAME ?? (dev ? 'admin' : '');
+  const authPassword = overrides.authPassword ?? process.env.AUTH_PASSWORD ?? (dev ? 'change-me' : '');
+  const sessionSecret = overrides.sessionSecret ?? process.env.SESSION_SECRET ?? (dev ? 'dev-session-secret' : '');
   const sessionTtlSeconds = Number(overrides.sessionTtlSeconds ?? process.env.SESSION_TTL_SECONDS ?? 60 * 60 * 8);
   const cookieSecure = parseBoolean(overrides.cookieSecure ?? process.env.COOKIE_SECURE, false);
   const paneHistoryLines = parsePositiveInteger(overrides.paneHistoryLines ?? process.env.PANE_HISTORY_LINES, 200);
@@ -246,6 +248,7 @@ function createConfig(overrides = {}) {
   return {
     host,
     port,
+    dev,
     corsOrigin,
     authUsername,
     authPassword,
@@ -264,9 +267,12 @@ async function getPaneSnapshot(tmuxClient, paneId, historyLines) {
 export function createApp({
   tmuxClient = tmux,
   config: configOverrides = {},
+  ptyBridgeFactory = createTmuxPtyBridge,
+  viteEnabled = true,
 } = {}) {
   const config = createConfig(configOverrides);
   const app = Fastify({ logger: false });
+  const activePtyConnections = new Set();
 
   app.decorate('tmuxClient', tmuxClient);
   app.decorate('runtimeConfig', config);
@@ -303,16 +309,114 @@ export function createApp({
     reply.code(statusCode).send({ error: error.message || 'Internal server error' });
   });
 
-  app.register(fastifyStatic, {
-    root: distDir,
-    prefix: '/',
-    index: ['index.html'],
+  const handlePtyUpgrade = async (request, socket, head) => {
+    const requestUrl = new URL(request.url, 'http://localhost');
+    if (requestUrl.pathname !== '/api/pty/socket') {
+      return;
+    }
+
+    const username = readAuthenticatedUser({ headers: request.headers }, config);
+    if (!username) {
+      rejectWebSocketUpgrade(socket, 401, '로그인이 필요합니다.');
+      return;
+    }
+
+    const paneId = requestUrl.searchParams.get('paneId');
+    if (!paneId) {
+      rejectWebSocketUpgrade(socket, 400, 'paneId is required');
+      return;
+    }
+
+    const cols = parsePositiveInteger(requestUrl.searchParams.get('cols'), 120);
+    const rows = parsePositiveInteger(requestUrl.searchParams.get('rows'), 32);
+
+    try {
+      const bridge = await ptyBridgeFactory(app.tmuxClient, { paneId, cols, rows });
+      const connection = acceptWebSocketUpgrade(request, socket, head);
+      if (!connection) {
+        bridge.destroy();
+        return;
+      }
+
+      let cleanedUp = false;
+      const cleanup = () => {
+        if (cleanedUp) {
+          return;
+        }
+
+        cleanedUp = true;
+        activePtyConnections.delete(cleanup);
+        bridge.destroy();
+        connection.close();
+      };
+
+      activePtyConnections.add(cleanup);
+
+      const unsubscribeData = bridge.onData((data) => {
+        connection.sendJson({ type: 'output', data });
+      });
+
+      const unsubscribeExit = bridge.onExit(({ exitCode, signal }) => {
+        connection.sendJson({ type: 'exit', exitCode, signal });
+        unsubscribeData();
+        unsubscribeExit();
+        cleanup();
+      });
+
+      connection.onText((rawMessage) => {
+        try {
+          const message = JSON.parse(rawMessage);
+
+          if (message.type === 'input' && typeof message.data === 'string') {
+            bridge.write(message.data);
+            return;
+          }
+
+          if (message.type === 'resize') {
+            bridge.resize(message.cols, message.rows);
+          }
+        } catch {}
+      });
+
+      connection.onClose(() => {
+        unsubscribeData();
+        unsubscribeExit();
+        cleanup();
+      });
+
+      connection.onError(() => {
+        unsubscribeData();
+        unsubscribeExit();
+        cleanup();
+      });
+
+      connection.sendJson({
+        type: 'ready',
+        paneId,
+        sessionName: bridge.metadata.sessionName,
+        windowId: bridge.metadata.windowId,
+        windowName: bridge.metadata.windowName,
+      });
+    } catch (error) {
+      console.error('PTY upgrade failed:', error);
+      rejectWebSocketUpgrade(socket, error.statusCode ?? 500, error.message || 'PTY WebSocket 연결에 실패했습니다.');
+    }
+  };
+
+  app.server.on('upgrade', handlePtyUpgrade);
+
+  app.addHook('onClose', async () => {
+    app.server.off('upgrade', handlePtyUpgrade);
+    for (const cleanup of [...activePtyConnections]) {
+      cleanup();
+    }
   });
 
   app.get('/api/health', async () => ({
     ok: true,
     host: config.host,
     port: config.port,
+    dev: config.dev,
     authMode: 'credentials',
     cookieSecure: config.cookieSecure,
     paneHistoryLines: config.paneHistoryLines,
@@ -494,21 +598,30 @@ export function createApp({
       return;
     }
 
-    if (request.method === 'GET' || request.method === 'HEAD') {
-      return reply.sendFile('index.html');
+    if ((request.method === 'GET' || request.method === 'HEAD') && viteEnabled) {
+      return reply.html();
     }
 
     reply.code(404).send({ error: 'Not found' });
   });
 
-  return { app, config };
+  return { app, config, viteEnabled };
 }
 
 export async function startServer(options = {}) {
-  const { app, config } = createApp(options);
+  const { app, config, viteEnabled } = createApp(options);
+  if (viteEnabled) {
+    await app.register(FastifyVite, {
+      root: projectRoot,
+      dev: config.dev,
+      spa: true,
+    });
+    await app.vite.ready();
+  }
   await app.listen({ port: config.port, host: config.host });
 
   console.log(`tmux-web-console listening on http://${config.host}:${config.port}`);
+  console.log(config.dev ? 'Fastify + Vite development mode is enabled.' : 'Production bundle mode is enabled.');
   console.log(`Credential login is enabled for user ${config.authUsername}.`);
   console.log(config.cookieSecure ? 'Secure cookie mode is enabled.' : 'Secure cookie mode is disabled. Enable COOKIE_SECURE=true behind HTTPS.');
   console.log(`Live pane capture keeps ${config.paneHistoryLines} lines with a ${config.paneStreamIntervalMs}ms refresh interval.`);

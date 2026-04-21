@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 
-function buildTestApp(overrides = {}) {
+function buildTestApp(overrides = {}, options = {}) {
   const fakeTmux = {
     async getTree() {
       return [
@@ -33,14 +33,14 @@ function buildTestApp(overrides = {}) {
     async listSessions() {
       return [{ id: '$1', name: 'alpha', windows: 1, attached: 1 }];
     },
-    async capturePane(targetPane, historyLines = 200) {
+    async capturePane(targetPane, historyLines = 200, { includeAnsi = true } = {}) {
       return {
         targetPane,
         content: '\u001b[32mline one\u001b[0m\nline two',
         lineCount: 2,
         historyLines,
         capturedAt: '2026-04-21T03:00:00.000Z',
-        includesAnsi: true,
+        includesAnsi: includeAnsi,
       };
     },
     async createSession(name) {
@@ -83,6 +83,8 @@ function buildTestApp(overrides = {}) {
 
   const { app } = createApp({
     tmuxClient: fakeTmux,
+    viteEnabled: false,
+    ...options,
     config: {
       host: '127.0.0.1',
       port: 0,
