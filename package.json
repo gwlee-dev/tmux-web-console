@@ -2,19 +2,43 @@
   "name": "tmux-web-console",
   "version": "0.1.0",
   "private": true,
-  "description": "Node-only web UI and JSON API for controlling tmux sessions remotely",
+  "description": "Fastify API with a React + shadcn/ui frontend for controlling tmux sessions remotely",
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "dev:server": "node --watch src/server.js",
+    "build": "tsc -b && vite build",
+    "prestart": "npm run build",
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check src/tmux.js"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+    "check": "node --check src/server.js && node --check src/tmux.js && npm run typecheck && npm run build"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@fastify/static": "^9.1.2",
-    "fastify": "^5.8.5"
+    "@fontsource-variable/geist": "^5.2.8",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "fastify": "^5.8.5",
+    "lucide-react": "^1.8.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "shadcn": "^4.3.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.3",
+    "tw-animate-css": "^1.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.3",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.9"
   }
 }
