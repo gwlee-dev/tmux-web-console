@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   Command,
   FolderOpen,
   LoaderCircle,
@@ -9,13 +11,14 @@ import {
   MonitorSmartphone,
   Plus,
   RefreshCw,
+  Search,
   Shield,
   SquareTerminal,
   Trash2,
   UserRound,
 } from 'lucide-react';
 
-import { TerminalSurface } from '@/components/terminal-surface';
+import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -176,9 +179,14 @@ function App() {
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [liveSnapshot, setLiveSnapshot] = useState<PaneSnapshot | null>(null);
   const [liveState, setLiveState] = useState<LiveConnectionState>('idle');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [terminalSize, setTerminalSize] = useState<{ cols: number; rows: number } | null>(null);
 
   const pendingInputRef = useRef('');
   const pendingInputTimerRef = useRef<number | null>(null);
+  const pendingResizeTimerRef = useRef<number | null>(null);
+  const lastResizeRef = useRef<string>('');
+  const terminalRef = useRef<TerminalSurfaceHandle | null>(null);
 
   const apiRequest = useCallback(async <T,>(path: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -299,6 +307,9 @@ function App() {
       if (pendingInputTimerRef.current !== null) {
         window.clearTimeout(pendingInputTimerRef.current);
       }
+      if (pendingResizeTimerRef.current !== null) {
+        window.clearTimeout(pendingResizeTimerRef.current);
+      }
     };
   }, []);
 
@@ -344,6 +355,37 @@ function App() {
     [flushPendingInput, selectedPaneId],
   );
 
+  const queueTerminalResize = useCallback(
+    (size: { cols: number; rows: number }) => {
+      setTerminalSize(size);
+
+      if (!selectedPaneId) {
+        return;
+      }
+
+      const signature = `${selectedPaneId}:${size.cols}x${size.rows}`;
+      if (lastResizeRef.current === signature) {
+        return;
+      }
+
+      if (pendingResizeTimerRef.current !== null) {
+        window.clearTimeout(pendingResizeTimerRef.current);
+      }
+
+      pendingResizeTimerRef.current = window.setTimeout(() => {
+        pendingResizeTimerRef.current = null;
+        lastResizeRef.current = signature;
+        void apiRequest(`/api/panes/${encodeURIComponent(selectedPaneId)}/resize`, {
+          method: 'POST',
+          body: JSON.stringify(size),
+        }).catch((error) => {
+          setStatus({ tone: 'destructive', message: summarizeError(error) });
+        });
+      }, 120);
+    },
+    [apiRequest, selectedPaneId],
+  );
+
   useEffect(() => {
     if (!currentUser || !selectedPaneId) {
       return undefined;
@@ -380,6 +422,13 @@ function App() {
       source.close();
     };
   }, [currentUser, selectedPaneId]);
+
+  useEffect(() => {
+    if (selectedPaneId) {
+      terminalRef.current?.focus();
+      terminalRef.current?.fit();
+    }
+  }, [selectedPaneId]);
 
   const totals = useMemo(() => {
     const windows = sessions.reduce((sum, session) => sum + session.windows.length, 0);
@@ -431,6 +480,7 @@ function App() {
       setLiveSnapshot(null);
       setLiveState('idle');
       setCommandInput('');
+      setSearchQuery('');
       setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
@@ -538,6 +588,24 @@ function App() {
     }
   };
 
+  const runSearch = (direction: 'next' | 'previous') => {
+    if (!searchQuery.trim()) {
+      setStatus({ tone: 'destructive', message: '검색어를 입력해주세요.' });
+      return;
+    }
+
+    const found = direction === 'next'
+      ? terminalRef.current?.findNext(searchQuery.trim())
+      : terminalRef.current?.findPrevious(searchQuery.trim());
+
+    if (!found) {
+      setStatus({ tone: 'secondary', message: `터미널에서 "${searchQuery.trim()}" 검색 결과를 찾지 못했습니다.` });
+      return;
+    }
+
+    setStatus({ tone: 'default', message: `터미널에서 "${searchQuery.trim()}" 검색 결과로 이동했습니다.` });
+  };
+
   const statusVariant =
     status.tone === 'destructive' ? 'destructive' : status.tone === 'default' ? 'default' : 'secondary';
   const liveVariant = liveState === 'error' ? 'destructive' : liveState === 'live' ? 'default' : 'secondary';
@@ -579,10 +647,11 @@ function App() {
             <CardContent className="space-y-3">
               <Badge variant={statusVariant}>{status.tone === 'destructive' ? '오류' : '안내'}</Badge>
               <p className="text-sm leading-6 text-muted-foreground">{status.message}</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-4">
                 <MiniMetric label="세션" value={`${sessions.length}`} />
                 <MiniMetric label="창" value={`${totals.windows}`} />
                 <MiniMetric label="패널" value={`${totals.panes}`} />
+                <MiniMetric label="활성 클라이언트" value={`${totals.attached}`} />
               </div>
             </CardContent>
           </Card>
@@ -613,13 +682,13 @@ function App() {
 
             <Card>
               <CardHeader>
-                <CardTitle>이번 레이아웃 변경</CardTitle>
-                <CardDescription>스크롤 피로를 줄이기 위해 구조를 바꿨습니다.</CardDescription>
+                <CardTitle>이번 단계</CardTitle>
+                <CardDescription>터미널 경험을 더 실제처럼 다듬었습니다.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-                <p>왼쪽은 세션/창/패널 탐색 전용 스크롤 영역입니다.</p>
-                <p>오른쪽은 선택한 패널의 실제 터미널 뷰와 작업 카드가 고정됩니다.</p>
-                <p>로그인 후에는 xterm.js 기반 입력/출력 UI를 바로 사용할 수 있습니다.</p>
+                <p>왼쪽은 세션 트리 전용 스크롤 영역, 오른쪽은 터미널 작업 전용 영역입니다.</p>
+                <p>xterm.js 기반 검색, 포커스, 리사이즈 연동을 추가했습니다.</p>
+                <p>터미널 영역 크기가 바뀌면 tmux pane 크기도 함께 맞추려고 시도합니다.</p>
               </CardContent>
             </Card>
           </section>
@@ -644,12 +713,7 @@ function App() {
                             <div className="font-semibold">{session.name}</div>
                             <div className="text-xs text-muted-foreground">창 {session.windows.length}개 · 붙음 {session.attached}개</div>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => void killSession(session.name)}
-                            disabled={busyKey === `kill:${session.name}`}
-                          >
+                          <Button variant="ghost" size="icon-sm" onClick={() => void killSession(session.name)} disabled={busyKey === `kill:${session.name}`}>
                             <Trash2 className="size-4" />
                           </Button>
                         </div>
@@ -706,7 +770,7 @@ function App() {
                 <CardHeader>
                   <CardTitle>터미널</CardTitle>
                   <CardDescription>
-                    선택한 패널 출력이 xterm.js로 렌더링됩니다. 키 입력도 선택한 패널로 전달됩니다.
+                    선택한 패널 출력이 xterm.js로 렌더링됩니다. 키 입력도 선택한 패널로 전달되고, 크기 변경도 tmux pane에 반영됩니다.
                   </CardDescription>
                   <CardAction>
                     <Badge variant={liveVariant}>
@@ -720,12 +784,34 @@ function App() {
                     <span>{selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowIndex}. ${selectedPaneMeta.windowName}` : '왼쪽에서 패널을 선택해주세요.'}</span>
                     <span>마지막 캡처: {formatCapturedAt(liveSnapshot?.capturedAt)}</span>
                     <span>줄 수: {liveSnapshot?.lineCount ?? 0}</span>
+                    <span>터미널 크기: {terminalSize ? `${terminalSize.cols}×${terminalSize.rows}` : '-'}</span>
                   </div>
+
+                  <div className="grid gap-3 rounded-xl border border-border/70 bg-background/50 p-3 lg:grid-cols-[1fr_auto]">
+                    <div className="flex items-center gap-2">
+                      <Search className="size-4 text-muted-foreground" />
+                      <Input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="터미널 검색" />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => runSearch('previous')}>
+                        <ArrowUp className="size-4" /> 이전
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => runSearch('next')}>
+                        <ArrowDown className="size-4" /> 다음
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => terminalRef.current?.focus()}>
+                        <SquareTerminal className="size-4" /> 포커스
+                      </Button>
+                    </div>
+                  </div>
+
                   <TerminalSurface
+                    ref={terminalRef}
                     snapshot={liveSnapshot}
                     selectedPaneId={selectedPaneId}
                     statusMessage={selectedPaneId ? '패널 출력 연결 중...' : '왼쪽 목록에서 패널을 선택해주세요.'}
                     onInput={queueTerminalInput}
+                    onResize={queueTerminalResize}
                   />
                 </CardContent>
               </Card>
@@ -783,11 +869,7 @@ function App() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <Textarea
-                      placeholder="예: npm run dev"
-                      value={commandInput}
-                      onChange={(event) => setCommandInput(event.target.value)}
-                    />
+                    <Textarea placeholder="예: npm run dev" value={commandInput} onChange={(event) => setCommandInput(event.target.value)} />
                     <Button onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
                       {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <Command className="size-4" />}
                       명령 전송

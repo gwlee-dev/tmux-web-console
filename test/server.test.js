@@ -58,6 +58,9 @@ function buildTestApp(overrides = {}) {
     async sendInput(targetPane, input) {
       return { ok: true, targetPane, inputLength: input.length };
     },
+    async resizePane(targetPane, cols, rows) {
+      return { ok: true, targetPane, cols, rows };
+    },
   };
 
   const { app } = createApp({
@@ -182,6 +185,33 @@ test('pane input endpoint forwards terminal keystrokes after login', async (t) =
     ok: true,
     targetPane: '%1',
     inputLength: 3,
+  });
+});
+
+test('pane resize endpoint syncs terminal dimensions after login', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
+
+  const cookieHeader = await loginAndGetCookie(app);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/panes/%251/resize',
+    headers: {
+      cookie: cookieHeader,
+      'content-type': 'application/json',
+    },
+    payload: {
+      cols: 132,
+      rows: 38,
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    targetPane: '%1',
+    cols: 132,
+    rows: 38,
   });
 });
 

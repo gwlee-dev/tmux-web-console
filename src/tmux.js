@@ -251,6 +251,18 @@ export async function sendCommand(targetPane, command, enter = true) {
   return { ok: true, targetPane, command, enter };
 }
 
+
+export async function resizePane(targetPane, cols, rows) {
+  if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) {
+    const error = new Error('cols and rows must be positive integers');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  await runTmux(['resize-pane', '-t', targetPane, '-x', String(cols), '-y', String(rows)]);
+  return { ok: true, targetPane, cols, rows };
+}
+
 export async function sendInput(targetPane, input) {
   if (typeof input !== 'string' || input.length === 0) {
     const error = new Error('input is required');
@@ -287,4 +299,5 @@ export default {
   createWindow,
   sendCommand,
   sendInput,
+  resizePane,
 };
