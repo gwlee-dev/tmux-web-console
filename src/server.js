@@ -22,6 +22,15 @@ function parseBoolean(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
 function parseCookies(cookieHeader) {
   if (!cookieHeader) {
     return {};
@@ -194,6 +203,8 @@ function createConfig(overrides = {}) {
   const sessionSecret = overrides.sessionSecret ?? process.env.SESSION_SECRET ?? '';
   const sessionTtlSeconds = Number(overrides.sessionTtlSeconds ?? process.env.SESSION_TTL_SECONDS ?? 60 * 60 * 8);
   const cookieSecure = parseBoolean(overrides.cookieSecure ?? process.env.COOKIE_SECURE, false);
+  const paneHistoryLines = parsePositiveInteger(overrides.paneHistoryLines ?? process.env.PANE_HISTORY_LINES, 200);
+  const paneStreamIntervalMs = parsePositiveInteger(overrides.paneStreamIntervalMs ?? process.env.PANE_STREAM_INTERVAL_MS, 1000);
 
   if (!Number.isInteger(port) || port < 0) {
     throw new Error('PORT must be a non-negative integer');
@@ -221,7 +232,13 @@ function createConfig(overrides = {}) {
     sessionSecret,
     sessionTtlSeconds,
     cookieSecure,
+    paneHistoryLines,
+    paneStreamIntervalMs,
   };
+}
+
+async function getPaneSnapshot(tmuxClient, paneId, historyLines) {
+  return tmuxClient.capturePane(paneId, historyLines);
 }
 
 export function createApp({
@@ -278,6 +295,8 @@ export function createApp({
     port: config.port,
     authMode: 'credentials',
     cookieSecure: config.cookieSecure,
+    paneHistoryLines: config.paneHistoryLines,
+    paneStreamIntervalMs: config.paneStreamIntervalMs,
   }));
 
   app.post('/api/login', async (request, reply) => {
@@ -320,6 +339,69 @@ export function createApp({
     return { sessions };
   });
 
+  app.get('/api/panes/:paneId', async (request) => {
+    const paneId = request.params.paneId;
+    const historyLines = parsePositiveInteger(request.query?.lines, config.paneHistoryLines);
+    return getPaneSnapshot(app.tmuxClient, paneId, historyLines);
+  });
+
+  app.get('/api/panes/:paneId/stream', async (request, reply) => {
+    const paneId = request.params.paneId;
+    const historyLines = parsePositiveInteger(request.query?.lines, config.paneHistoryLines);
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+
+    let lastPayload = '';
+
+    const writeEvent = (eventName, payload) => {
+      reply.raw.write(`event: ${eventName}\n`);
+      reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const sendSnapshot = async (force = false) => {
+      try {
+        const snapshot = await getPaneSnapshot(app.tmuxClient, paneId, historyLines);
+        const serialized = JSON.stringify(snapshot);
+        if (force || serialized !== lastPayload) {
+          lastPayload = serialized;
+          writeEvent('snapshot', snapshot);
+        }
+      } catch (error) {
+        writeEvent('stream-error', {
+          error: error.message || '패널 출력을 가져오지 못했습니다.',
+        });
+      }
+    };
+
+    const intervalId = setInterval(() => {
+      void sendSnapshot();
+    }, config.paneStreamIntervalMs);
+    const heartbeatId = setInterval(() => {
+      reply.raw.write(': keep-alive\n\n');
+    }, 15000);
+
+    let closed = false;
+
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+      clearInterval(intervalId);
+      clearInterval(heartbeatId);
+    };
+
+    request.raw.on('close', cleanup);
+    await sendSnapshot(true);
+  });
+
   app.get('/api/sessions', async () => {
     const sessions = await app.tmuxClient.listSessions();
     return { sessions };
@@ -334,7 +416,7 @@ export function createApp({
   });
 
   app.delete('/api/sessions/:name', async (request) => {
-    const name = decodeURIComponent(request.params.name);
+    const name = request.params.name;
     const result = await app.tmuxClient.killSession(name);
     return result;
   });
@@ -387,6 +469,7 @@ export async function startServer(options = {}) {
   console.log(`tmux-web-console listening on http://${config.host}:${config.port}`);
   console.log(`Credential login is enabled for user ${config.authUsername}.`);
   console.log(config.cookieSecure ? 'Secure cookie mode is enabled.' : 'Secure cookie mode is disabled. Enable COOKIE_SECURE=true behind HTTPS.');
+  console.log(`Live pane capture keeps ${config.paneHistoryLines} lines with a ${config.paneStreamIntervalMs}ms refresh interval.`);
 
   return { app, config };
 }

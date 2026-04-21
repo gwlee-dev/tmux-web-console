@@ -30,6 +30,15 @@ function buildTestApp(overrides = {}) {
     async listSessions() {
       return [{ id: '$1', name: 'alpha', windows: 1, attached: 1 }];
     },
+    async capturePane(targetPane, historyLines = 200) {
+      return {
+        targetPane,
+        content: 'line one\nline two',
+        lineCount: 2,
+        historyLines,
+        capturedAt: '2026-04-21T03:00:00.000Z',
+      };
+    },
     async createSession(name) {
       return { ok: true, name };
     },
@@ -87,6 +96,7 @@ test('health endpoint is public', async (t) => {
   const payload = response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.authMode, 'credentials');
+  assert.equal(payload.paneHistoryLines, 200);
 });
 
 test('login sets an httpOnly session cookie and protected endpoints require it', async (t) => {
@@ -117,6 +127,29 @@ test('login sets an httpOnly session cookie and protected endpoints require it',
   });
   assert.equal(treeResponse.statusCode, 200);
   assert.equal(treeResponse.json().sessions[0].name, 'alpha');
+});
+
+test('pane snapshot endpoint returns captured pane output after login', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
+
+  const cookieHeader = await loginAndGetCookie(app);
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/panes/%251?lines=120',
+    headers: {
+      cookie: cookieHeader,
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    targetPane: '%1',
+    content: 'line one\nline two',
+    lineCount: 2,
+    historyLines: 120,
+    capturedAt: '2026-04-21T03:00:00.000Z',
+  });
 });
 
 test('command endpoint validates and forwards payload after login', async (t) => {
