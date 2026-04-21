@@ -1,0 +1,161 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #131a2a;
+  --panel-border: #23304d;
+  --text: #e7edf7;
+  --muted: #95a1bb;
+  --accent: #62d0ff;
+  --danger: #ff7272;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: radial-gradient(circle at top, #13203d, var(--bg));
+  color: var(--text);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: #1c2740;
+  color: var(--text);
+  padding: 0.7rem 1rem;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  background: #0d1525;
+  color: var(--text);
+}
+
+.layout {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.hero,
+.section-header,
+.session-header,
+.window-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.hero {
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.8rem;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin-top: 0;
+}
+
+.subtitle,
+.hint,
+.status,
+.empty,
+.session-header p,
+.window-header span,
+.pane-meta span {
+  color: var(--muted);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card,
+.session,
+.window,
+.pane {
+  background: color-mix(in oklab, var(--panel), black 8%);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+}
+
+.card,
+.session,
+.window {
+  padding: 1rem;
+}
+
+.controls label,
+.command-form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.sessions,
+.windows,
+.panes {
+  display: grid;
+  gap: 1rem;
+}
+
+.pane {
+  padding: 0.9rem;
+}
+
+.pane-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.command-form {
+  grid-template-columns: 1fr auto;
+}
+
+@media (max-width: 700px) {
+  .layout {
+    padding: 1rem;
+  }
+
+  .hero,
+  .section-header,
+  .session-header,
+  .window-header,
+  .pane-meta,
+  .command-form {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>tmux web console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">tmux · remote control</p>
+          <h1>tmux web console</h1>
+          <p class="subtitle">Inspect sessions, create windows, and send commands to panes from a browser.</p>
+        </div>
+        <button id="refreshButton">Refresh</button>
+      </header>
+
+      <section class="card controls">
+        <h2>Connection</h2>
+        <label>
+          API token
+          <input id="tokenInput" type="password" placeholder="Enter API token" />
+        </label>
+        <p class="hint">Stored locally in your browser only.</p>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <h2>Create session</h2>
+          <form id="createSessionForm">
+            <input id="sessionNameInput" type="text" placeholder="session name" required />
+            <button type="submit">Create</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Create window</h2>
+          <form id="createWindowForm">
+            <input id="windowSessionInput" type="text" placeholder="session name" required />
+            <input id="windowNameInput" type="text" placeholder="window name" required />
+            <button type="submit">Create</button>
+          </form>
+        </section>
+      </section>
+
+      <section class="card">
+        <div class="section-header">
+          <h2>Sessions</h2>
+          <span id="statusText" class="status">Loading…</span>
+        </div>
+        <div id="sessionsRoot" class="sessions"></div>
+      </section>
+    </main>
+
+    <template id="paneTemplate">
+      <article class="pane">
+        <div class="pane-meta"></div>
+        <form class="command-form">
+          <input class="command-input" type="text" placeholder="Type command for this pane" required />
+          <button type="submit">Send</button>
+        </form>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
