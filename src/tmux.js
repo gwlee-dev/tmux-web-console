@@ -3,6 +3,42 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+const SPECIAL_SEQUENCE_MAP = new Map([
+  ['\u001b[A', 'Up'],
+  ['\u001b[B', 'Down'],
+  ['\u001b[C', 'Right'],
+  ['\u001b[D', 'Left'],
+  ['\u001b[H', 'Home'],
+  ['\u001b[F', 'End'],
+  ['\u001b[2~', 'IC'],
+  ['\u001b[3~', 'DC'],
+  ['\u001b[5~', 'PageUp'],
+  ['\u001b[6~', 'PageDown'],
+  ['\u001bOP', 'F1'],
+  ['\u001bOQ', 'F2'],
+  ['\u001bOR', 'F3'],
+  ['\u001bOS', 'F4'],
+]);
+
+const CONTROL_CHARACTER_MAP = new Map([
+  ['\r', 'Enter'],
+  ['\n', 'Enter'],
+  ['\t', 'Tab'],
+  ['\u0003', 'C-c'],
+  ['\u0004', 'C-d'],
+  ['\u0005', 'C-e'],
+  ['\u0006', 'C-f'],
+  ['\u0001', 'C-a'],
+  ['\u0002', 'C-b'],
+  ['\u000b', 'C-k'],
+  ['\u000c', 'C-l'],
+  ['\u000e', 'C-n'],
+  ['\u0010', 'C-p'],
+  ['\u0015', 'C-u'],
+  ['\u001a', 'C-z'],
+  ['\u007f', 'BSpace'],
+]);
+
 function parseTable(stdout, columns) {
   return stdout
     .trim()
@@ -12,6 +48,62 @@ function parseTable(stdout, columns) {
       const values = line.split('\t');
       return Object.fromEntries(columns.map((column, index) => [column, values[index] ?? '']));
     });
+}
+
+function tokenizeInput(input) {
+  const tokens = [];
+  let literalBuffer = '';
+  let index = 0;
+
+  const flushLiteral = () => {
+    if (literalBuffer.length > 0) {
+      tokens.push({ type: 'literal', value: literalBuffer });
+      literalBuffer = '';
+    }
+  };
+
+  const orderedSequences = [...SPECIAL_SEQUENCE_MAP.entries()].sort((left, right) => right[0].length - left[0].length);
+
+  while (index < input.length) {
+    const rest = input.slice(index);
+    let matchedSequence = false;
+
+    for (const [sequence, keyName] of orderedSequences) {
+      if (rest.startsWith(sequence)) {
+        flushLiteral();
+        tokens.push({ type: 'key', value: keyName });
+        index += sequence.length;
+        matchedSequence = true;
+        break;
+      }
+    }
+
+    if (matchedSequence) {
+      continue;
+    }
+
+    const currentCharacter = input[index];
+    const controlKey = CONTROL_CHARACTER_MAP.get(currentCharacter);
+    if (controlKey) {
+      flushLiteral();
+      tokens.push({ type: 'key', value: controlKey });
+      index += 1;
+      continue;
+    }
+
+    if (currentCharacter === '\u001b') {
+      flushLiteral();
+      tokens.push({ type: 'key', value: 'Escape' });
+      index += 1;
+      continue;
+    }
+
+    literalBuffer += currentCharacter;
+    index += 1;
+  }
+
+  flushLiteral();
+  return tokens;
 }
 
 export async function runTmux(args) {
@@ -86,18 +178,15 @@ export async function listPanes() {
   }));
 }
 
-export async function capturePane(targetPane, historyLines = 200) {
+export async function capturePane(targetPane, historyLines = 200, { includeAnsi = true } = {}) {
   const normalizedHistory = Number.isInteger(historyLines) && historyLines > 0 ? historyLines : 200;
-  const content = await runTmux([
-    'capture-pane',
-    '-p',
-    '-J',
-    '-t',
-    targetPane,
-    '-S',
-    `-${normalizedHistory}`,
-  ]);
+  const args = ['capture-pane', '-p', '-J', '-t', targetPane, '-S', `-${normalizedHistory}`];
 
+  if (includeAnsi) {
+    args.splice(2, 0, '-e');
+  }
+
+  const content = await runTmux(args);
   const normalizedContent = content.replace(/\n$/, '');
   const lineCount = normalizedContent.length === 0 ? 0 : normalizedContent.split('\n').length;
 
@@ -107,15 +196,12 @@ export async function capturePane(targetPane, historyLines = 200) {
     lineCount,
     historyLines: normalizedHistory,
     capturedAt: new Date().toISOString(),
+    includesAnsi: includeAnsi,
   };
 }
 
 export async function getTree() {
-  const [sessions, windows, panes] = await Promise.all([
-    listSessions(),
-    listWindows(),
-    listPanes(),
-  ]);
+  const [sessions, windows, panes] = await Promise.all([listSessions(), listWindows(), listPanes()]);
 
   const panesByWindow = new Map();
   for (const pane of panes) {
@@ -165,6 +251,30 @@ export async function sendCommand(targetPane, command, enter = true) {
   return { ok: true, targetPane, command, enter };
 }
 
+export async function sendInput(targetPane, input) {
+  if (typeof input !== 'string' || input.length === 0) {
+    const error = new Error('input is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const tokens = tokenizeInput(input);
+  for (const token of tokens) {
+    if (token.type === 'literal') {
+      await runTmux(['send-keys', '-l', '-t', targetPane, token.value]);
+      continue;
+    }
+
+    await runTmux(['send-keys', '-t', targetPane, token.value]);
+  }
+
+  return {
+    ok: true,
+    targetPane,
+    inputLength: input.length,
+  };
+}
+
 export default {
   runTmux,
   listSessions,
@@ -176,4 +286,5 @@ export default {
   killSession,
   createWindow,
   sendCommand,
+  sendInput,
 };
