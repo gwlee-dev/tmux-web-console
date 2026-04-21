@@ -8,6 +8,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - **프론트엔드**: React + Vite
 - **UI**: shadcn/ui + Tailwind CSS v4
 - **인증**: 아이디/비밀번호 로그인 + HttpOnly 세션 쿠키
+- **실시간 보기**: tmux pane 캡처 + SSE 스트리밍
 - **tmux 브리지**: `execFile('tmux', args)` 기반
 
 ## 되는 것
@@ -19,6 +20,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - 창 생성
 - 세션 종료
 - 패널에 명령 전송
+- 선택한 패널 출력 실시간 보기
 - 세션 쿠키 기반 원격 보호
 
 ## UI 특징
@@ -28,6 +30,7 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - 로그인 화면과 운영 화면 분리
 - 세션 / 창 / 패널 구조를 한 화면에서 탐색
 - 패널별 명령 전송 입력창 제공
+- 선택한 패널을 상단 라이브 뷰어에서 계속 추적
 
 ## 환경 변수
 
@@ -41,6 +44,8 @@ AUTH_PASSWORD=change-me
 SESSION_SECRET=change-this-session-secret
 SESSION_TTL_SECONDS=28800
 COOKIE_SECURE=false
+PANE_HISTORY_LINES=200
+PANE_STREAM_INTERVAL_MS=1000
 CORS_ORIGIN=*
 ```
 
@@ -49,6 +54,7 @@ CORS_ORIGIN=*
 - 운영 환경에서는 `AUTH_PASSWORD` 를 강한 값으로 바꾸세요.
 - 운영 환경에서는 `SESSION_SECRET` 를 충분히 긴 랜덤 문자열로 바꾸세요.
 - HTTPS 뒤에서 운영할 때는 `COOKIE_SECURE=true` 를 권장합니다.
+- 패널 출력이 너무 길면 `PANE_HISTORY_LINES` 를 줄여 응답량을 조절하세요.
 
 ## 설치
 
@@ -81,6 +87,8 @@ AUTH_USERNAME=admin \
 AUTH_PASSWORD='change-me' \
 SESSION_SECRET='replace-with-a-long-random-secret' \
 COOKIE_SECURE=false \
+PANE_HISTORY_LINES=200 \
+PANE_STREAM_INTERVAL_MS=1000 \
 npm start
 ```
 
@@ -100,15 +108,24 @@ npm run check
 - `POST /api/logout`
 - `GET /api/auth/me`
 - `GET /api/tree`
+- `GET /api/panes/:paneId`
+- `GET /api/panes/:paneId/stream`
 - `GET /api/sessions`
 - `POST /api/sessions`
 - `DELETE /api/sessions/:name`
 - `POST /api/windows`
 - `POST /api/commands`
 
+## 라이브 뷰 동작 방식
+
+- 서버는 `tmux capture-pane -p -J` 로 최근 패널 내용을 읽습니다.
+- 브라우저는 `EventSource` 로 `/api/panes/:paneId/stream` 에 연결합니다.
+- 내용이 바뀌면 새 스냅샷을 SSE로 밀어줍니다.
+- 현재 버전은 **읽기 전용 실시간 뷰어**이며, xterm.js 기반의 진짜 터미널 에뮬레이터는 아직 아닙니다.
+
 ## 쿠키 보안 메모
 
-MDN의 `Set-Cookie` 가이드와 보안 쿠키 가이드를 따라, 현재 세션 쿠키는 기본적으로 다음 속성을 사용합니다.
+현재 세션 쿠키는 기본적으로 다음 속성을 사용합니다.
 
 - `HttpOnly`
 - `SameSite=Lax`
@@ -127,7 +144,7 @@ HTTPS가 아닌 환경에서는 `Secure` 쿠키가 동작하지 않으므로 개
 - TLS 종료 / 프록시 하드닝
 - rate limiting
 - 감사 로그
-- 패널 출력 실시간 스트리밍
+- 진짜 터미널 입력 포커스 / xterm.js 렌더링
 - 계정 저장소/암호 해시/비밀번호 재설정 흐름
 
 인터넷에 직접 노출하려면 위 항목을 추가하는 것이 좋습니다.

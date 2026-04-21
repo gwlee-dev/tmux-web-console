@@ -86,6 +86,30 @@ export async function listPanes() {
   }));
 }
 
+export async function capturePane(targetPane, historyLines = 200) {
+  const normalizedHistory = Number.isInteger(historyLines) && historyLines > 0 ? historyLines : 200;
+  const content = await runTmux([
+    'capture-pane',
+    '-p',
+    '-J',
+    '-t',
+    targetPane,
+    '-S',
+    `-${normalizedHistory}`,
+  ]);
+
+  const normalizedContent = content.replace(/\n$/, '');
+  const lineCount = normalizedContent.length === 0 ? 0 : normalizedContent.split('\n').length;
+
+  return {
+    targetPane,
+    content: normalizedContent,
+    lineCount,
+    historyLines: normalizedHistory,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
 export async function getTree() {
   const [sessions, windows, panes] = await Promise.all([
     listSessions(),
@@ -146,6 +170,7 @@ export default {
   listSessions,
   listWindows,
   listPanes,
+  capturePane,
   getTree,
   createSession,
   killSession,
