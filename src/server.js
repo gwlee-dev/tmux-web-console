@@ -6,7 +6,7 @@ import tmux from './tmux.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const publicDir = path.resolve(__dirname, '../public');
+const distDir = path.resolve(__dirname, '../dist');
 
 function getTokenFromRequest(request) {
   const bearer = request.headers.authorization;
@@ -109,7 +109,7 @@ export function createApp({
   });
 
   app.register(fastifyStatic, {
-    root: publicDir,
+    root: distDir,
     prefix: '/',
     index: ['index.html'],
   });
@@ -168,6 +168,19 @@ export function createApp({
 
     const result = await app.tmuxClient.sendCommand(targetPane, command, enter);
     return result;
+  });
+
+  app.setNotFoundHandler(async (request, reply) => {
+    if (request.url.startsWith('/api/')) {
+      reply.code(404).send({ error: 'Not found' });
+      return;
+    }
+
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      return reply.sendFile('index.html');
+    }
+
+    reply.code(404).send({ error: 'Not found' });
   });
 
   return { app, config };

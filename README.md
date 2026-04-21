@@ -1,59 +1,34 @@
 # tmux-web-console
 
-Fastify-based web UI and JSON API for controlling tmux sessions, windows, and panes remotely.
+Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 
-## What this baseline does
+## 현재 구성
 
-- exposes a browser UI from a single Node server
-- lists tmux sessions, windows, and panes
-- creates sessions
-- creates windows inside a session
-- sends commands to a pane with `tmux send-keys`
-- kills sessions
-- protects remote access with a shared API token
-- serves the browser app through Fastify
+- **백엔드**: Fastify
+- **프론트엔드**: React + Vite
+- **UI**: shadcn/ui + Tailwind CSS v4
+- **tmux 브리지**: `execFile('tmux', args)` 기반
 
-## Stack choice
+## 되는 것
 
-You clarified that `fastify` or `next.js` is allowed.
+- 세션 목록 조회
+- 창/패널 구조 조회
+- 세션 생성
+- 창 생성
+- 세션 종료
+- 패널에 명령 전송
+- API 토큰 기반 원격 보호
 
-This project now uses **Fastify** instead of raw `node:http` because this app is currently much more API/server heavy than page-framework heavy.
+## UI 특징
 
-Why Fastify here:
+- 모든 주요 UI 문구를 **한글**로 제공
+- shadcn/ui 카드형 대시보드
+- 세션 / 창 / 패널 구조를 한 화면에서 탐색
+- 패널별 명령 전송 입력창 제공
 
-- cleaner routing and response handling
-- built-in request injection for tests
-- easy static asset serving for the current lightweight UI
-- lower overhead than introducing a full Next.js app before SSR/RSC-style needs exist
+## 환경 변수
 
-## Security model
-
-Remote tmux control is powerful, so this starter is intentionally opinionated:
-
-- if `HOST` is not localhost, `API_TOKEN` is required
-- every control endpoint except `/api/health` requires the token
-- commands are sent through `execFile('tmux', args)` instead of shell string interpolation
-- the browser stores the token only in `localStorage`
-
-This is enough for a first private deployment, but **not enough for internet exposure** without TLS, rate limiting, stronger auth, and proxy hardening.
-
-## Project structure
-
-```txt
-public/
-  index.html      # minimal browser UI
-  app.js          # browser-side session/pane controls
-  styles.css      # styling
-src/
-  server.js       # Fastify server, auth, routes, static serving
-  tmux.js         # tmux command bridge
-test/
-  server.test.js  # API tests using Fastify inject
-```
-
-## Environment
-
-Copy `.env.example` values into your runtime environment:
+`.env.example` 값을 참고해서 실행 환경에 주입하세요.
 
 ```bash
 HOST=0.0.0.0
@@ -62,32 +37,44 @@ API_TOKEN=change-me
 CORS_ORIGIN=*
 ```
 
-## Install
+## 설치
 
 ```bash
 npm install
 ```
 
-## Run
+## 개발 모드
+
+백엔드:
+
+```bash
+npm run dev:server
+```
+
+프론트엔드:
+
+```bash
+npm run dev
+```
+
+Vite 개발 서버는 `/api` 요청을 `http://127.0.0.1:4317` 로 프록시합니다.
+
+## 프로덕션 실행
 
 ```bash
 HOST=0.0.0.0 PORT=4317 API_TOKEN=change-me npm start
 ```
 
-Then open:
+`npm start` 전에 자동으로 프론트엔드 빌드를 수행합니다.
 
-```txt
-http://<host>:4317
-```
-
-## Verify
+## 검증
 
 ```bash
 npm test
 npm run check
 ```
 
-## Available endpoints
+## 주요 엔드포인트
 
 - `GET /api/health`
 - `GET /api/tree`
@@ -97,30 +84,14 @@ npm run check
 - `POST /api/windows`
 - `POST /api/commands`
 
-## Example requests
+## 보안 메모
 
-Create a session:
+현재는 첫 단계라서 다음은 아직 미구현입니다.
 
-```bash
-curl -X POST http://127.0.0.1:4317/api/sessions \
-  -H 'content-type: application/json' \
-  -H 'x-api-token: change-me' \
-  -d '{"name":"dev"}'
-```
+- 사용자 계정 기반 인증
+- TLS 종료 / 프록시 하드닝
+- rate limiting
+- 감사 로그
+- 패널 출력 실시간 스트리밍
 
-Send a command to a pane:
-
-```bash
-curl -X POST http://127.0.0.1:4317/api/commands \
-  -H 'content-type: application/json' \
-  -H 'x-api-token: change-me' \
-  -d '{"targetPane":"%1","command":"htop","enter":true}'
-```
-
-## Next steps I recommend
-
-1. add HTTPS + reverse proxy in front of this
-2. replace shared-token auth with user accounts or SSO
-3. add streaming updates for pane output and session changes
-4. add per-command authorization / audit logging
-5. add a proper pane viewer using tmux capture APIs or streaming transport
+인터넷에 직접 노출하려면 위 항목을 추가하는 것이 좋습니다.
