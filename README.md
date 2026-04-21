@@ -1,6 +1,6 @@
 # tmux-web-console
 
-Node-only web UI and JSON API for controlling tmux sessions, windows, and panes remotely.
+Fastify-based web UI and JSON API for controlling tmux sessions, windows, and panes remotely.
 
 ## What this baseline does
 
@@ -11,16 +11,20 @@ Node-only web UI and JSON API for controlling tmux sessions, windows, and panes 
 - sends commands to a pane with `tmux send-keys`
 - kills sessions
 - protects remote access with a shared API token
-- uses only built-in Node modules, with **zero npm dependencies**
+- serves the browser app through Fastify
 
-## Why this shape
+## Stack choice
 
-You said:
+You clarified that `fastify` or `next.js` is allowed.
 
-- remote access is allowed
-- Node only
+This project now uses **Fastify** instead of raw `node:http` because this app is currently much more API/server heavy than page-framework heavy.
 
-So this starter avoids framework lock-in and keeps the attack surface small while still giving you a real browser-controllable baseline.
+Why Fastify here:
+
+- cleaner routing and response handling
+- built-in request injection for tests
+- easy static asset serving for the current lightweight UI
+- lower overhead than introducing a full Next.js app before SSR/RSC-style needs exist
 
 ## Security model
 
@@ -31,7 +35,7 @@ Remote tmux control is powerful, so this starter is intentionally opinionated:
 - commands are sent through `execFile('tmux', args)` instead of shell string interpolation
 - the browser stores the token only in `localStorage`
 
-This is enough for a first private deployment, but **not enough for internet exposure** without a reverse proxy, TLS, rate limiting, and stronger auth.
+This is enough for a first private deployment, but **not enough for internet exposure** without TLS, rate limiting, stronger auth, and proxy hardening.
 
 ## Project structure
 
@@ -41,10 +45,10 @@ public/
   app.js          # browser-side session/pane controls
   styles.css      # styling
 src/
-  server.js       # HTTP server, auth, routes, static serving
+  server.js       # Fastify server, auth, routes, static serving
   tmux.js         # tmux command bridge
 test/
-  server.test.js  # lightweight API tests
+  server.test.js  # API tests using Fastify inject
 ```
 
 ## Environment
@@ -58,16 +62,29 @@ API_TOKEN=change-me
 CORS_ORIGIN=*
 ```
 
+## Install
+
+```bash
+npm install
+```
+
 ## Run
 
 ```bash
-npm start
+HOST=0.0.0.0 PORT=4317 API_TOKEN=change-me npm start
 ```
 
 Then open:
 
 ```txt
 http://<host>:4317
+```
+
+## Verify
+
+```bash
+npm test
+npm run check
 ```
 
 ## Available endpoints
@@ -106,4 +123,4 @@ curl -X POST http://127.0.0.1:4317/api/commands \
 2. replace shared-token auth with user accounts or SSO
 3. add streaming updates for pane output and session changes
 4. add per-command authorization / audit logging
-5. add a proper pane viewer using PTY or controlled tmux capture APIs
+5. add a proper pane viewer using tmux capture APIs or streaming transport

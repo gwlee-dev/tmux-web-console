@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from '../src/server.js';
+import { createApp } from '../src/server.js';
 
-async function startTestServer(overrides = {}) {
+function buildTestApp(overrides = {}) {
   const fakeTmux = {
     async getTree() {
       return [
@@ -44,7 +44,7 @@ async function startTestServer(overrides = {}) {
     },
   };
 
-  const { server } = createServer({
+  const { app } = createApp({
     tmuxClient: fakeTmux,
     config: {
       host: '127.0.0.1',
@@ -55,70 +55,62 @@ async function startTestServer(overrides = {}) {
     },
   });
 
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-
-  return {
-    baseUrl,
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
-  };
+  return app;
 }
 
-test('health endpoint is public', async () => {
-  const app = await startTestServer();
+test('health endpoint is public', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
 
-  try {
-    const response = await fetch(`${app.baseUrl}/api/health`);
-    assert.equal(response.status, 200);
-    const payload = await response.json();
-    assert.equal(payload.ok, true);
-    assert.equal(payload.authRequired, true);
-  } finally {
-    await app.close();
-  }
+  const response = await app.inject({ method: 'GET', url: '/api/health' });
+  assert.equal(response.statusCode, 200);
+
+  const payload = response.json();
+  assert.equal(payload.ok, true);
+  assert.equal(payload.authRequired, true);
 });
 
-test('tree endpoint requires token and returns sessions when authorized', async () => {
-  const app = await startTestServer();
+test('tree endpoint requires token and returns sessions when authorized', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
 
-  try {
-    const unauthorized = await fetch(`${app.baseUrl}/api/tree`);
-    assert.equal(unauthorized.status, 401);
+  const unauthorized = await app.inject({ method: 'GET', url: '/api/tree' });
+  assert.equal(unauthorized.statusCode, 401);
 
-    const response = await fetch(`${app.baseUrl}/api/tree`, {
-      headers: { 'x-api-token': 'test-token' },
-    });
-    assert.equal(response.status, 200);
-    const payload = await response.json();
-    assert.equal(payload.sessions[0].name, 'alpha');
-  } finally {
-    await app.close();
-  }
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/tree',
+    headers: { 'x-api-token': 'test-token' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.equal(payload.sessions[0].name, 'alpha');
 });
 
-test('command endpoint validates and forwards payload', async () => {
-  const app = await startTestServer();
+test('command endpoint validates and forwards payload', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
 
-  try {
-    const response = await fetch(`${app.baseUrl}/api/commands`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-token': 'test-token',
-      },
-      body: JSON.stringify({ targetPane: '%1', command: 'pwd', enter: true }),
-    });
-
-    assert.equal(response.status, 200);
-    const payload = await response.json();
-    assert.deepEqual(payload, {
-      ok: true,
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/commands',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-token': 'test-token',
+    },
+    payload: {
       targetPane: '%1',
       command: 'pwd',
       enter: true,
-    });
-  } finally {
-    await app.close();
-  }
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    targetPane: '%1',
+    command: 'pwd',
+    enter: true,
+  });
 });
