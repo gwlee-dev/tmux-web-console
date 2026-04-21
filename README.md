@@ -8,8 +8,10 @@ Fastify API + React + shadcn/ui 기반의 tmux 원격 제어 콘솔입니다.
 - **프론트엔드**: React + Vite
 - **UI**: shadcn/ui + Tailwind CSS v4
 - **터미널 렌더링**: xterm.js + `@xterm/addon-fit` + `@xterm/addon-search`
+- **터미널 글꼴**: 로컬 파일로 제공되는 Monoplex KR Nerd
 - **인증**: 아이디/비밀번호 로그인 + HttpOnly 세션 쿠키
-- **실시간 보기**: tmux pane 캡처 + SSE 스트리밍
+- **실시간 터미널 연결**: PTY + WebSocket
+- **보조 출력 API**: tmux pane 캡처 + SSE 스트리밍
 - **tmux 브리지**: `execFile('tmux', args)` 기반
 
 ## 되는 것
@@ -65,24 +67,24 @@ CORS_ORIGIN=*
 ## 설치
 
 ```bash
-npm install
+yarn install
 ```
 
 ## 개발 모드
 
-백엔드:
+통합 개발 서버(Fastify + Vite HMR):
 
 ```bash
-npm run dev:server
+yarn dev
 ```
 
-프론트엔드:
+서버 전용 개발 모드:
 
 ```bash
-npm run dev
+yarn dev:server
 ```
 
-Vite 개발 서버는 `/api` 요청을 `http://127.0.0.1:4317` 로 프록시합니다.
+개발 모드에서는 Fastify 안에 Vite가 붙어서 HMR이 동작합니다.
 
 ## 프로덕션 실행
 
@@ -95,16 +97,16 @@ SESSION_SECRET='replace-with-a-long-random-secret' \
 COOKIE_SECURE=false \
 PANE_HISTORY_LINES=200 \
 PANE_STREAM_INTERVAL_MS=1000 \
-npm start
+yarn start
 ```
 
-`npm start` 전에 자동으로 프론트엔드 빌드를 수행합니다.
+`yarn start` 전에 자동으로 프론트엔드 빌드를 수행합니다.
 
 ## 검증
 
 ```bash
-npm test
-npm run check
+yarn test
+yarn check
 ```
 
 ## 주요 엔드포인트
@@ -113,6 +115,7 @@ npm run check
 - `POST /api/login`
 - `POST /api/logout`
 - `GET /api/auth/me`
+- `GET /api/pty/socket?paneId=%25...&cols=...&rows=...` (WebSocket)
 - `GET /api/tree`
 - `GET /api/panes/:paneId`
 - `POST /api/panes/:paneId/input`
@@ -126,13 +129,12 @@ npm run check
 
 ## 라이브/터미널 동작 방식
 
-- 서버는 `tmux capture-pane -e -p -J` 로 최근 패널 내용을 읽습니다.
-- 브라우저는 `EventSource` 로 `/api/panes/:paneId/stream` 에 연결합니다.
-- 내용이 바뀌면 새 스냅샷을 SSE로 밀어줍니다.
-- 브라우저에서 입력한 키는 `/api/panes/:paneId/input` 으로 전달되어 `tmux send-keys` 로 주입됩니다.
+- 기본 터미널 연결은 `node-pty` 로 tmux client를 띄운 뒤, 브라우저와 `WebSocket` 으로 직접 연결합니다.
+- 브라우저 입력은 WebSocket을 통해 PTY에 바로 기록됩니다.
+- 터미널 박스 크기가 바뀌면 PTY resize 이벤트가 함께 전달됩니다.
+- 선택한 pane로 최대한 맞춰 붙기 위해 서버가 대상 pane/window를 먼저 정렬한 뒤 tmux client를 attach합니다.
 - xterm 검색은 브라우저 버퍼를 대상으로 동작합니다.
-- 터미널 박스 크기가 바뀌면 `/api/panes/:paneId/resize` 로 현재 cols/rows를 보내고, 서버는 `window-size manual` + `resize-window` + `resize-pane` 순으로 맞추려고 시도합니다.
-- 현재 버전은 **xterm.js로 렌더링되는 읽기/입력 가능 패널 뷰**이며, PTY를 직접 붙인 완전한 브라우저 셸은 아닙니다.
+- 기존 `capture-pane` + SSE 경로도 남아 있어서 보조 API나 fallback 용도로 계속 활용할 수 있습니다.
 
 ## 쿠키 보안 메모
 

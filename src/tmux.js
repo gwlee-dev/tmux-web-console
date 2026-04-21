@@ -260,6 +260,41 @@ export async function getPaneGeometry(targetPane) {
   };
 }
 
+export async function getPanePtyTarget(targetPane) {
+  const stdout = await runTmux([
+    'display-message',
+    '-p',
+    '-t',
+    targetPane,
+    '#{pane_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_title}',
+  ]);
+
+  const [paneId = '', sessionName = '', windowId = '', windowName = '', currentPath = '', paneTitle = ''] = stdout.trim().split('\t');
+
+  return {
+    paneId,
+    sessionName,
+    windowId,
+    windowName,
+    currentPath,
+    paneTitle,
+  };
+}
+
+export async function preparePanePtyTarget(targetPane) {
+  const target = await getPanePtyTarget(targetPane);
+
+  try {
+    await runTmux(['select-window', '-t', target.windowId]);
+  } catch {}
+
+  try {
+    await runTmux(['select-pane', '-t', targetPane]);
+  } catch {}
+
+  return target;
+}
+
 export async function sendCommand(targetPane, command, enter = true) {
   const args = ['send-keys', '-t', targetPane, command];
   if (enter) {
@@ -338,6 +373,8 @@ export default {
   killSession,
   createWindow,
   getPaneGeometry,
+  getPanePtyTarget,
+  preparePanePtyTarget,
   sendCommand,
   sendInput,
   resizePane,
