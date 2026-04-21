@@ -52,6 +52,15 @@ function buildTestApp(overrides = {}) {
     async createWindow(sessionName, name) {
       return { ok: true, sessionName, name };
     },
+    async getPaneGeometry() {
+      return {
+        sessionName: 'alpha',
+        windowId: '@1',
+        windowName: 'editor',
+        width: 100,
+        height: 30,
+      };
+    },
     async sendCommand(targetPane, command, enter) {
       return { ok: true, targetPane, command, enter };
     },
@@ -59,7 +68,16 @@ function buildTestApp(overrides = {}) {
       return { ok: true, targetPane, inputLength: input.length };
     },
     async resizePane(targetPane, cols, rows) {
-      return { ok: true, targetPane, cols, rows };
+      return {
+        ok: true,
+        targetPane,
+        requestedCols: cols,
+        requestedRows: rows,
+        appliedCols: 100,
+        appliedRows: 30,
+        windowId: '@1',
+        sessionName: 'alpha',
+      };
     },
   };
 
@@ -210,8 +228,12 @@ test('pane resize endpoint syncs terminal dimensions after login', async (t) => 
   assert.deepEqual(response.json(), {
     ok: true,
     targetPane: '%1',
-    cols: 132,
-    rows: 38,
+    requestedCols: 132,
+    requestedRows: 38,
+    appliedCols: 100,
+    appliedRows: 30,
+    windowId: '@1',
+    sessionName: 'alpha',
   });
 });
 

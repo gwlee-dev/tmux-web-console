@@ -241,6 +241,25 @@ export async function createWindow(sessionName, name) {
   return { ok: true, sessionName, name };
 }
 
+export async function getPaneGeometry(targetPane) {
+  const stdout = await runTmux([
+    'display-message',
+    '-p',
+    '-t',
+    targetPane,
+    '#{session_name}\t#{window_id}\t#{window_name}\t#{pane_width}\t#{pane_height}',
+  ]);
+
+  const [sessionName = '', windowId = '', windowName = '', width = '0', height = '0'] = stdout.trim().split('\t');
+  return {
+    sessionName,
+    windowId,
+    windowName,
+    width: Number(width),
+    height: Number(height),
+  };
+}
+
 export async function sendCommand(targetPane, command, enter = true) {
   const args = ['send-keys', '-t', targetPane, command];
   if (enter) {
@@ -259,8 +278,29 @@ export async function resizePane(targetPane, cols, rows) {
     throw error;
   }
 
+  const geometry = await getPaneGeometry(targetPane);
+
+  try {
+    await runTmux(['setw', '-t', geometry.windowId, 'window-size', 'manual']);
+  } catch {}
+
+  try {
+    await runTmux(['resize-window', '-t', geometry.windowId, '-x', String(cols), '-y', String(rows)]);
+  } catch {}
+
   await runTmux(['resize-pane', '-t', targetPane, '-x', String(cols), '-y', String(rows)]);
-  return { ok: true, targetPane, cols, rows };
+
+  const updatedGeometry = await getPaneGeometry(targetPane);
+  return {
+    ok: true,
+    targetPane,
+    requestedCols: cols,
+    requestedRows: rows,
+    appliedCols: updatedGeometry.width,
+    appliedRows: updatedGeometry.height,
+    windowId: updatedGeometry.windowId,
+    sessionName: updatedGeometry.sessionName,
+  };
 }
 
 export async function sendInput(targetPane, input) {
@@ -297,6 +337,7 @@ export default {
   createSession,
   killSession,
   createWindow,
+  getPaneGeometry,
   sendCommand,
   sendInput,
   resizePane,
