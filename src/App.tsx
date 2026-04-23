@@ -5,7 +5,7 @@ import {
   LoaderCircle,
   LogIn,
   LogOut,
-  MoreHorizontal,
+  Clipboard,
   Moon,
   Pencil,
   Plus,
@@ -15,17 +15,19 @@ import {
   Sun,
   SquareTerminal,
   Trash2,
+  X,
 } from 'lucide-react';
 
 import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarInput, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarSeparator, SidebarTrigger } from '@/components/ui/sidebar';
 import { Toaster } from '@/components/ui/sonner';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
@@ -115,6 +117,7 @@ type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedThemeMode = 'light' | 'dark';
 
 const THEME_STORAGE_KEY = 'tmux-web-console-theme';
+const RECENT_SESSIONS_STORAGE_KEY = 'tmux-web-console-recent-sessions';
 
 function getInitialThemePreference(): ThemePreference {
   if (typeof window === 'undefined') {
@@ -202,13 +205,9 @@ function getRetryToastCopy(label: string, attempt: number, retries: number) {
     };
   }
 
+
   if (label === '세션 목록') {
-    return {
-      id: 'retry:sessions',
-      loading: `세션 목록을 다시 불러오는 중... (${attempt}/${retries})`,
-      success: `세션 목록을 다시 불러옵니다.`,
-      error: `세션 목록 재시도 준비에 실패했습니다.`,
-    };
+    return null;
   }
 
   return {
@@ -256,12 +255,16 @@ async function withReadRetry<T>(
       })();
       const retryToastCopy = getRetryToastCopy(label, attempt, retries);
 
-      await toast.promise(retryPromise, {
-        id: retryToastCopy.id,
-        loading: retryToastCopy.loading,
-        success: retryToastCopy.success,
-        error: retryToastCopy.error,
-      });
+      if (retryToastCopy) {
+        await toast.promise(retryPromise, {
+          id: retryToastCopy.id,
+          loading: retryToastCopy.loading,
+          success: retryToastCopy.success,
+          error: retryToastCopy.error,
+        });
+      } else {
+        await retryPromise;
+      }
     }
   }
 
@@ -272,6 +275,7 @@ function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => getInitialThemePreference());
   const [systemPrefersDark, setSystemPrefersDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [pathname, setPathname] = useState(() => window.location.pathname);
+  const [viewportHeight, setViewportHeight] = useState(() => window.visualViewport?.height ?? window.innerHeight);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionNode[]>([]);
   const [, setStatus] = useState<StatusState>({ tone: 'secondary', message: '서버 연결 상태를 확인하는 중입니다.' });
@@ -284,6 +288,9 @@ function App() {
   const [sessionToKill, setSessionToKill] = useState<string | null>(null);
   const [renameSourceName, setRenameSourceName] = useState('');
   const [renameSessionName, setRenameSessionName] = useState('');
+  const [mobileCommandOpen, setMobileCommandOpen] = useState(false);
+  const [mobileSearchBarOpen, setMobileSearchBarOpen] = useState(false);
+  const [mobileSearchFocused, setMobileSearchFocused] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [commandInput, setCommandInput] = useState('');
@@ -291,10 +298,23 @@ function App() {
   const [ptyState, setPtyState] = useState<LiveConnectionState>('idle');
   const [searchQuery, setSearchQuery] = useState('');
   const [treeQuery, setTreeQuery] = useState('');
+  const [recentSessionNames, setRecentSessionNames] = useState<string[]>(() => {
+    if (typeof window === 'undefined') {
+      return [];
+    }
+
+    try {
+      const value = JSON.parse(window.localStorage.getItem(RECENT_SESSIONS_STORAGE_KEY) ?? '[]');
+      return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
 
   const pendingResizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef('');
   const terminalRef = useRef<TerminalSurfaceHandle | null>(null);
+  const mobileCommandInputRef = useRef<HTMLInputElement | null>(null);
   const ptySocketRef = useRef<WebSocket | null>(null);
   const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
@@ -308,16 +328,17 @@ function App() {
       : 'bg-slate-50 text-slate-900';
   const terminalStripClassName =
     resolvedThemeMode === 'dark'
-      ? 'border-b border-white/15 bg-[#050816] shadow-[inset_0_-1px_0_rgba(255,255,255,0.06)]'
-      : 'border-b border-slate-300 bg-slate-50 shadow-[inset_0_-1px_0_rgba(15,23,42,0.06)]';
+      ? 'border-b border-white/6 bg-white/[0.06] md:rounded-2xl md:border md:px-1 md:py-0.5 md:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+      : 'border-b border-slate-200 bg-slate-100 md:rounded-2xl md:border md:px-1 md:py-0.5 md:shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]';
   const selectedTabClassName =
     resolvedThemeMode === 'dark'
-      ? 'border-white/20 bg-[#050816] text-slate-100'
-      : 'border-slate-300 bg-slate-50 text-slate-900';
+      ? 'border-transparent bg-white/[0.14] text-slate-50 shadow-sm'
+      : 'border-transparent bg-background text-slate-900 shadow-sm';
   const unselectedTabClassName =
     resolvedThemeMode === 'dark'
-      ? 'border-white/8 bg-white/[0.04] text-slate-400 hover:bg-white/[0.07] hover:text-slate-200'
-      : 'border-slate-200 bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700';
+      ? 'border-transparent bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-slate-100'
+      : 'border-transparent bg-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+;
 
   const navigate = useCallback((nextPath: string, replace = false) => {
     if (window.location.pathname === nextPath) {
@@ -348,10 +369,36 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateViewportHeight = () => {
+      setViewportHeight(viewport?.height ?? window.innerHeight);
+    };
+
+    updateViewportHeight();
+    viewport?.addEventListener('resize', updateViewportHeight);
+    viewport?.addEventListener('scroll', updateViewportHeight);
+    window.addEventListener('resize', updateViewportHeight);
+
+    return () => {
+      viewport?.removeEventListener('resize', updateViewportHeight);
+      viewport?.removeEventListener('scroll', updateViewportHeight);
+      window.removeEventListener('resize', updateViewportHeight);
+    };
+  }, []);
+
+  useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('dark', isDark);
     window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
   }, [isDark, themePreference]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RECENT_SESSIONS_STORAGE_KEY, JSON.stringify(recentSessionNames.slice(0, 6)));
+  }, [recentSessionNames]);
+
+  const rememberRecentSession = useCallback((name: string) => {
+    setRecentSessionNames((current) => [name, ...current.filter((entry) => entry !== name)].slice(0, 6));
+  }, []);
 
   const setTheme = useCallback((nextTheme: ThemePreference) => {
     setThemePreference(nextTheme);
@@ -517,10 +564,11 @@ function App() {
 
   const selectPane = useCallback(
     (sessionName: string, paneId: string) => {
+      rememberRecentSession(sessionName);
       setSelectedPaneId(paneId);
       navigate(buildPanePath(sessionName, paneId));
     },
-    [navigate],
+    [navigate, rememberRecentSession],
   );
 
   const selectSession = useCallback((sessionName: string) => {
@@ -723,6 +771,16 @@ function App() {
     }
   }, [selectedPaneId]);
 
+  useEffect(() => {
+    terminalRef.current?.fit();
+  }, [viewportHeight]);
+
+  useEffect(() => {
+    if (mobileCommandOpen) {
+      window.setTimeout(() => mobileCommandInputRef.current?.focus(), 0)
+    }
+  }, [mobileCommandOpen]);
+
   const selectedSessionNode = useMemo(() => {
     const sessionName = selectedPaneMeta?.sessionName ?? (route.kind === 'pane' ? route.sessionName : null);
     if (!sessionName) {
@@ -732,21 +790,7 @@ function App() {
     return sessions.find((session) => session.name === sessionName) ?? null;
   }, [route, selectedPaneMeta, sessions]);
 
-  const visibleWindows = useMemo(() => {
-    if (!selectedSessionNode) {
-      return [] as WindowNode[];
-    }
-
-    return selectedSessionNode.windows.slice(0, 4);
-  }, [selectedSessionNode]);
-
-  const overflowWindows = useMemo(() => {
-    if (!selectedSessionNode) {
-      return [] as WindowNode[];
-    }
-
-    return selectedSessionNode.windows.slice(4);
-  }, [selectedSessionNode]);
+  const sessionWindows = selectedSessionNode?.windows ?? [];
 
   const filteredSessions = useMemo(() => {
     const query = treeQuery.trim().toLowerCase();
@@ -756,6 +800,14 @@ function App() {
 
     return sessions.filter((session) => session.name.toLowerCase().includes(query));
   }, [sessions, treeQuery]);
+
+  const recentSessions = useMemo(() => {
+    const ordered = recentSessionNames
+      .map((name) => sessions.find((session) => session.name === name) ?? null)
+      .filter((session): session is SessionNode => session !== null);
+
+    return ordered;
+  }, [recentSessionNames, sessions]);
 
   const login = async () => {
     const username = loginUsername.trim();
@@ -854,12 +906,12 @@ function App() {
     const normalizedWindow = windowName.trim();
 
     if (!normalizedSession) {
-      setStatus({ tone: 'destructive', message: 'session을 다시 선택해주세요.' });
+      setStatus({ tone: 'destructive', message: '세션을 다시 선택해주세요.' });
       return;
     }
 
     if (!normalizedWindow) {
-      setStatus({ tone: 'destructive', message: 'window 이름을 입력해주세요.' });
+      setStatus({ tone: 'destructive', message: 'Window 이름을 입력해주세요.' });
       return;
     }
 
@@ -872,8 +924,37 @@ function App() {
       setWindowSessionName('');
       setWindowName('');
       closeDialog();
-      setStatus({ tone: 'default', message: `${normalizedSession} session에 ${normalizedWindow} window를 만들었습니다.` });
+      setStatus({ tone: 'default', message: `${normalizedSession} 세션에 ${normalizedWindow} Window를 만들었습니다.` });
       await refreshData();
+    } catch (error) {
+      setStatus({ tone: 'destructive', message: summarizeError(error) });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const closeWindow = async (windowId: string) => {
+    const currentSession = selectedSessionNode;
+    if (!currentSession) {
+      return;
+    }
+
+    const fallbackWindow = currentSession.windows.find((windowNode) => windowNode.id !== windowId);
+    const fallbackPane = fallbackWindow?.panes.find((pane) => pane.active) ?? fallbackWindow?.panes[0] ?? null;
+    const shouldLeaveRoute = selectedPaneMeta?.windowId === windowId;
+
+    setBusyKey(`kill-window:${windowId}`);
+    try {
+      await apiRequest(`/api/windows/${encodeURIComponent(windowId)}`, { method: 'DELETE' });
+      await refreshData();
+
+      if (shouldLeaveRoute) {
+        if (fallbackPane) {
+          selectPane(currentSession.name, fallbackPane.id);
+        } else {
+          navigate('/');
+        }
+      }
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
     } finally {
@@ -886,7 +967,7 @@ function App() {
     const nextName = renameSessionName.trim();
 
     if (!sourceName || !nextName) {
-      setStatus({ tone: 'destructive', message: 'Session 이름을 입력해주세요.' });
+      setStatus({ tone: 'destructive', message: '세션 이름을 입력해주세요.' });
       return;
     }
 
@@ -897,7 +978,7 @@ function App() {
         body: JSON.stringify({ name: nextName }),
       });
       closeDialog();
-      setStatus({ tone: 'default', message: `${sourceName} session 이름을 ${nextName}(으)로 변경했습니다.` });
+      setStatus({ tone: 'default', message: `${sourceName} 세션 이름을 ${nextName}(으)로 변경했습니다.` });
       if (selectedSessionNode?.name === sourceName && selectedPaneId) {
         navigate(buildPanePath(nextName, selectedPaneId), true);
       }
@@ -914,7 +995,7 @@ function App() {
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
       setSessionToKill(null);
-      setStatus({ tone: 'default', message: `${name} session을 종료했습니다.` });
+      setStatus({ tone: 'default', message: `${name} 세션을 종료했습니다.` });
       await refreshData();
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
@@ -1010,264 +1091,345 @@ function App() {
   }
 
   return (
-    <div className={isDark ? 'dark h-svh bg-background text-foreground' : 'h-svh bg-background text-foreground'}>
-      <div className="grid h-full min-h-0 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="flex min-h-0 flex-col border-r border-border/60 bg-sidebar/70">
-          <div className="border-b border-border/60 px-3 py-3">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">tmux 웹 콘솔</div>
-                <div className="text-xs text-muted-foreground">{currentUser}</div>
+    <SidebarProvider
+      defaultOpen
+      className={isDark ? 'dark h-dvh min-h-0 overflow-hidden bg-background text-foreground' : 'h-dvh min-h-0 overflow-hidden bg-background text-foreground'}
+      style={{ height: `${viewportHeight}px`, minHeight: `${viewportHeight}px` }}
+    >
+      <Sidebar variant="inset" collapsible="icon">
+            <SidebarHeader>
+              <div className="flex items-center gap-2">
+                <SidebarTrigger />
+                <button type="button" onClick={() => navigate('/')} className="min-w-0 flex-1 truncate text-left text-sm font-semibold hover:underline">
+                  tmux 웹 콘솔
+                </button>
+                <Button variant="outline" size="icon" onClick={openSessionDialog}>
+                  <Plus className="size-4" />
+                </Button>
               </div>
-              <Button variant="outline" size="icon" onClick={openSessionDialog}>
-                <Plus className="size-4" />
-              </Button>
-            </div>
-            <div className="flex items-center gap-2 rounded-2xl bg-background/80 px-3">
-              <Search className="size-4 shrink-0 text-muted-foreground" />
-              <Input
-                value={treeQuery}
-                onChange={(event) => setTreeQuery(event.target.value)}
-                placeholder="세션 검색"
-                className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-              />
-            </div>
-          </div>
+              <div className="px-2 text-xs text-muted-foreground">{currentUser}</div>
+              <SidebarInput value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="세션 검색" />
+            </SidebarHeader>
 
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="divide-y divide-border/40">
-              {filteredSessions.length === 0 ? (
-                <div className="px-4 py-4 text-sm text-muted-foreground">
-                  {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
-                </div>
-              ) : (
-                filteredSessions.map((session) => {
-                  const selected = selectedSessionNode?.id === session.id;
-                  const totalPanes = session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0);
-                  return (
-                    <div
-                      key={session.id}
-                      className={[
-                        'group flex items-start gap-2 px-4 py-3 transition',
-                        selected ? 'bg-sidebar-accent text-foreground' : 'hover:bg-sidebar-accent/60',
-                      ].join(' ')}
-                    >
-                      <button type="button" onClick={() => selectSession(session.name)} className="min-w-0 flex-1 text-left">
-                        <div className="truncate text-sm font-medium">{session.name}</div>
-                        <div className="mt-1 truncate text-xs text-muted-foreground">
-                          window {session.windows.length}
-                          {totalPanes > 1 ? ` · panes ${totalPanes}` : ''}
-                          {session.attached > 0 ? ` · 연결 ${session.attached}` : ''}
+            <SidebarContent>
+              <SidebarGroup>
+                <SidebarGroupLabel>세션 목록</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {filteredSessions.length === 0 ? (
+                      <SidebarMenuItem>
+                        <div className="px-2 py-3 text-sm text-muted-foreground">
+                          {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
                         </div>
-                      </button>
-                      <div className="flex shrink-0 items-center gap-1 opacity-70 transition group-hover:opacity-100">
-                        <Button variant="ghost" size="icon" onClick={() => openWindowDialog(session.name)}>
-                          <Plus className="size-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={() => openRenameSessionDialog(session.name)} disabled={busyKey === `rename:${session.name}`}>
-                          <Pencil className="size-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={() => setSessionToKill(session.name)} disabled={busyKey === `kill:${session.name}`}>
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })
+                      </SidebarMenuItem>
+                    ) : (
+                      filteredSessions.map((session) => {
+                        const selected = selectedSessionNode?.id === session.id
+                        const totalPanes = session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)
+
+                        return (
+                          <SidebarMenuItem key={session.id}>
+                            <div className="group relative">
+                              <SidebarMenuButton asChild isActive={selected} className="h-auto min-w-0 items-start py-3 pr-20">
+                                <button type="button" onClick={() => selectSession(session.name)}>
+                                  <div className="truncate text-sm font-medium">{session.name}</div>
+                                  <div className="mt-1 truncate text-xs text-muted-foreground">
+                                    Window {session.windows.length}
+                                    {totalPanes > 1 ? ` · panes ${totalPanes}` : ''}
+                                    {session.attached > 0 ? ` · 연결 ${session.attached}` : ''}
+                                  </div>
+                                </button>
+                              </SidebarMenuButton>
+                              <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1 pointer-events-auto opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                                <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openRenameSessionDialog(session.name); }}>
+                                  <Pencil className="size-4" />
+                                </Button>
+                                <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSessionToKill(session.name); }}>
+                                  <Trash2 className="size-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          </SidebarMenuItem>
+                        )
+                      })
+                    )}
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild variant="outline" className="h-auto border-dashed py-3">
+                        <button type="button" onClick={openSessionDialog}>
+                          <div className="truncate text-sm font-medium">새 세션</div>
+                          <div className="mt-1 text-xs text-muted-foreground">바로 만들기</div>
+                        </button>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </SidebarContent>
+
+            <SidebarSeparator />
+            <SidebarFooter>
+              <div className="flex items-center gap-2 px-2">
+                <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
+              </div>
+              <div className="flex items-center gap-2 px-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="icon">
+                      {themeIcon === Moon ? <Moon className="size-4" /> : <Sun className="size-4" />}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setTheme('system')}>
+                      {systemPrefersDark ? <Moon className="size-4" /> : <Sun className="size-4" />} 시스템
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setTheme('light')}>
+                      <Sun className="size-4" /> 라이트
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setTheme('dark')}>
+                      <Moon className="size-4" /> 다크
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button variant="outline" size="icon" onClick={() => void refreshData()} disabled={loading}>
+                  {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                </Button>
+                <Button variant="outline" size="icon" onClick={() => void logout()} disabled={busyKey === 'logout'}>
+                  {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
+                </Button>
+              </div>
+            </SidebarFooter>
+            <SidebarRail />
+          </Sidebar>
+
+          <SidebarInset>
+            <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 md:hidden">
+              <SidebarTrigger />
+              <button type="button" onClick={() => navigate('/')} className="min-w-0 flex-1 truncate text-left text-sm font-semibold">
+                {selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowName}` : 'tmux 웹 콘솔'}
+              </button>
+              {route.kind === 'home' ? (
+                <Button variant="outline" size="icon" onClick={openSessionDialog}>
+                  <Plus className="size-4" />
+                </Button>
+              ) : (
+                <>
+                  <Button variant={mobileSearchBarOpen ? 'default' : 'outline'} size="icon" onClick={() => setMobileSearchBarOpen((open) => !open)}>
+                    <Search className="size-4" />
+                  </Button>
+                  <Button variant={mobileCommandOpen ? 'default' : 'outline'} size="icon" onClick={() => setMobileCommandOpen(true)}>
+                    <Clipboard className="size-4" />
+                  </Button>
+                  {selectedSessionNode ? (
+                    <Button variant="outline" size="icon" onClick={() => openWindowDialog(selectedSessionNode.name)}>
+                      <Plus className="size-4" />
+                    </Button>
+                  ) : null}
+                </>
               )}
             </div>
-          </ScrollArea>
-
-          <div className="border-t border-border/60 p-3">
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="icon">
-                    {themeIcon === Moon ? <Moon className="size-4" /> : <Sun className="size-4" />}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setTheme('system')}>
-                    {systemPrefersDark ? <Moon className="size-4" /> : <Sun className="size-4" />} 시스템
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setTheme('light')}>
-                    <Sun className="size-4" /> 라이트
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setTheme('dark')}>
-                    <Moon className="size-4" /> 다크
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Button variant="outline" size="icon" onClick={() => void refreshData()} disabled={loading}>
-                {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-              </Button>
-              <Button variant="outline" size="icon" onClick={() => void logout()} disabled={busyKey === 'logout'}>
-                {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
-              </Button>
-            </div>
-          </div>
-        </aside>
-
-        <main className="min-h-0 bg-background">
-          {route.kind === 'home' ? (
-            <div className="mx-auto flex h-full max-w-5xl flex-col px-6 py-6">
-              <div className="mb-6">
-                <h1 className="text-2xl font-semibold">Sessions</h1>
-                <p className="mt-1 text-sm text-muted-foreground">접속할 session을 선택하거나 새로 만드세요.</p>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {sessions.map((session) => (
-                  <Card key={session.id} className="rounded-2xl">
+            {route.kind === 'home' ? (
+              <div className="flex h-full min-h-0 w-full flex-col px-0 py-0 md:px-6 md:py-6">
+                <div className="mb-6">
+                  <h1 className="text-2xl font-semibold">최근 연결한 세션</h1>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {recentSessions.map((session) => {
+                    const totalPanes = session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)
+                    return (
+                      <Card key={session.id} className="rounded-2xl">
+                        <CardHeader>
+                          <CardTitle className="truncate">{session.name}</CardTitle>
+                          <CardDescription>
+                            Window {session.windows.length} · pane {totalPanes} · 연결 {session.attached}
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <Button variant="outline" className="w-full justify-start" onClick={() => selectSession(session.name)}>
+                            세션 열기
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+                  <Card className="rounded-2xl border-dashed bg-muted/30">
                     <CardHeader>
-                      <CardTitle className="truncate">{session.name}</CardTitle>
-                      <CardDescription>
-                        window {session.windows.length} · pane {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)} · 연결 {session.attached}
-                      </CardDescription>
+                      <CardTitle>새 세션</CardTitle>
                     </CardHeader>
-                    <CardContent className="space-y-3">
-                      <Button variant="outline" className="w-full justify-start" onClick={() => selectSession(session.name)}>
-                        session 열기
+                    <CardContent>
+                      <Button className="w-full justify-start" onClick={openSessionDialog}>
+                        <Plus className="size-4" />
+                        새 세션 만들기
                       </Button>
-                      {session.windows.slice(0, 3).map((windowNode) => (
-                        <button
-                          key={windowNode.id}
-                          type="button"
-                          onClick={() => {
-                            const targetPane = windowNode.panes.find((pane) => pane.active) ?? windowNode.panes[0];
-                            if (targetPane) {
-                              selectPane(session.name, targetPane.id);
-                            }
-                          }}
-                          className="block w-full rounded-xl border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted/40"
-                        >
-                          <div className="truncate text-sm font-medium">
-                            {windowNode.index}. {windowNode.name}
-                          </div>
-                          <div className="truncate text-xs text-muted-foreground">
-                            panes {windowNode.panes.length}
-                          </div>
-                        </button>
-                      ))}
                     </CardContent>
                   </Card>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-full min-h-0 flex-col px-6 py-6">
-              <div className="mb-4 min-w-0">
-                <div className="truncate text-lg font-semibold">
-                  {selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowIndex}. ${selectedPaneMeta.windowName}` : 'pane 미선택'}
-                </div>
-                <div className="truncate text-sm text-muted-foreground">
-                  {selectedPaneMeta?.pane.currentCommand || '왼쪽 목록에서 session을 선택해주세요.'}
                 </div>
               </div>
+            ) : (
+              <div className="flex h-full min-h-0 w-full flex-col px-0 py-0 md:px-6 md:py-6">
+                <div className="mb-4 hidden px-4 pt-4 md:block md:px-0 md:pt-0">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-lg font-semibold">
+                        {selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowName}` : 'pane 미선택'}
+                      </div>
+                      <div className="truncate text-sm text-muted-foreground">
+                        {selectedPaneMeta?.pane.currentCommand || '왼쪽 목록에서 세션을 선택해주세요.'}
+                      </div>
+                    </div>
 
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2 rounded-2xl border border-border/70 bg-background/80 px-3">
-                  <Search className="size-4 text-muted-foreground" />
-                  <Input
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="터미널 검색"
-                    className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-                  />
-                </div>
-                <Button variant="outline" onClick={() => runSearch('previous')}>
-                  <ArrowUp className="size-4" /> 이전
-                </Button>
-                <Button variant="outline" onClick={() => runSearch('next')}>
-                  <ArrowDown className="size-4" /> 다음
-                </Button>
-                <Button variant="outline" onClick={() => terminalRef.current?.focus()}>
-                  <SquareTerminal className="size-4" /> 포커스
-                </Button>
-              </div>
-
-              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-border/70 ${terminalShellClassName}`}>
-                {selectedSessionNode ? (
-                  <div className={`px-3 pt-3 ${terminalStripClassName}`}>
-                    <div className="flex min-w-0 items-end gap-1 pr-2">
-                      {visibleWindows.map((windowNode) => {
-                        const selected = selectedPaneMeta?.windowId === windowNode.id;
-                        return (
-                          <button
-                            key={windowNode.id}
-                            type="button"
-                            onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
-                            className={[
-                              'max-w-[16rem] truncate rounded-t-lg border border-b-0 px-2.5 py-1.5 text-left text-xs shadow-[0_-1px_0_rgba(255,255,255,0.03)]',
-                              selected ? selectedTabClassName : unselectedTabClassName,
-                            ].join(' ')}
-                          >
-                            {windowNode.index}. {windowNode.name}
-                          </button>
-                        );
-                      })}
-                      {overflowWindows.length > 0 ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon">
-                              <MoreHorizontal className="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-72">
-                            {overflowWindows.map((windowNode) => (
-                              <DropdownMenuItem
-                                key={windowNode.id}
-                                onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
-                              >
-                                <span className="truncate">{windowNode.index}. {windowNode.name}</span>
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                    <div className="hidden shrink-0 items-center gap-2 md:flex">
+                      <div className="flex w-[20rem] items-center gap-2 rounded-2xl border border-border/70 bg-background/80 px-3">
+                        <Search className="size-4 text-muted-foreground" />
+                        <Input
+                          value={searchQuery}
+                          onChange={(event) => setSearchQuery(event.target.value)}
+                          placeholder="터미널 검색"
+                          className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                        />
+                      </div>
+                      <ButtonGroup>
+                        <Button variant="outline" onClick={() => runSearch('previous')}>
+                          <ArrowUp className="size-4" /> 이전
+                        </Button>
+                        <Button variant="outline" onClick={() => runSearch('next')}>
+                          <ArrowDown className="size-4" /> 다음
+                        </Button>
+                        <Button variant="outline" onClick={() => terminalRef.current?.focus()}>
+                          <SquareTerminal className="size-4" /> 포커스
+                        </Button>
+                      </ButtonGroup>
+                      {selectedSessionNode ? (
+                        <Button variant="outline" onClick={() => openWindowDialog(selectedSessionNode.name)}>
+                          <Plus className="size-4" /> 새 Window
+                        </Button>
                       ) : null}
                     </div>
                   </div>
+                </div>
+
+                {mobileSearchBarOpen ? (
+                  <div className="mt-3 flex w-full items-center gap-2 border-b border-border/70 px-4 pb-3 md:hidden">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-border/70 bg-background/80 px-3">
+                      <Search className="size-4 shrink-0 text-muted-foreground" />
+                      <Input
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        onFocus={() => setMobileSearchFocused(true)}
+                        onBlur={() => setMobileSearchFocused(false)}
+                        placeholder="터미널 검색"
+                        className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                      />
+                    </div>
+                    {!mobileSearchFocused ? (
+                      <ButtonGroup>
+                        <Button variant="outline" size="icon" onClick={() => runSearch('previous')}>
+                          <ArrowUp className="size-4" />
+                        </Button>
+                        <Button variant="outline" size="icon" onClick={() => runSearch('next')}>
+                          <ArrowDown className="size-4" />
+                        </Button>
+                        <Button variant="outline" size="icon" onClick={() => terminalRef.current?.focus()}>
+                          <SquareTerminal className="size-4" />
+                        </Button>
+                      </ButtonGroup>
+                    ) : null}
+                  </div>
                 ) : null}
 
-                <div className="min-h-0 flex-1 px-4 pb-3">
-                  <TerminalSurface
-                    ref={terminalRef}
-                    className="min-h-0 rounded-none bg-transparent p-0"
-                    mountClassName="h-full w-full"
-                    mode="stream"
-                    themeMode={resolvedThemeMode}
-                    selectedPaneId={selectedPaneId}
-                    statusMessage={selectedPaneId ? 'pane PTY 연결 중...' : '왼쪽 목록에서 session을 선택해주세요.'}
-                    onInput={queueTerminalInput}
-                    onResize={queueTerminalResize}
-                  />
-                </div>
-              </div>
+                <div className={`flex min-h-0 w-full flex-1 flex-col md:rounded-[28px] md:border md:border-border/70 ${terminalShellClassName}`}>
+                  {sessionWindows.length > 1 ? (
+                    <div className="px-0 pt-0 md:px-1 md:pt-1">
+                      <div className={terminalStripClassName}>
+                      <div className="w-full overflow-x-auto overflow-y-visible whitespace-nowrap">
+                        <div className="flex min-w-full items-center gap-1 px-1 py-1 md:px-0.5">
+                          {sessionWindows.map((windowNode) => {
+                            const selected = selectedPaneMeta?.windowId === windowNode.id
+                            return (
+                              <div
+                                key={windowNode.id}
+                                className={[
+                                  'group relative min-w-[7rem] flex-1 basis-0 rounded-lg border md:min-w-[10rem] md:rounded-xl',
+                                  selected ? selectedTabClassName : unselectedTabClassName,
+                                ].join(' ')}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    void closeWindow(windowNode.id)
+                                  }}
+                                  className={[
+                                    'absolute left-1 top-1/2 z-20 -translate-y-1/2 rounded-none p-1 text-muted-foreground transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 md:left-1.5 md:rounded-lg md:p-1.5 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100',
+                                    selected ? 'opacity-100' : 'opacity-0',
+                                  ].join(' ')}
+                                  aria-label={`${windowNode.name} 닫기`}
+                                >
+                                  <X className="size-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => selectedSessionNode && selectWindow(selectedSessionNode.name, windowNode.id)}
+                                  className={[
+                                    'block min-w-0 w-full truncate py-1 text-center text-[11px] md:px-8 md:py-2 md:text-xs',
+                                    selected ? 'pl-6 pr-2' : 'px-2',
+                                  ].join(' ')}
+                                >
+                                  {windowNode.name}
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      </div>
+                    </div>
+                  ) : null}
 
-              <div className="mt-4 rounded-[28px] border border-border/70 bg-background/80 px-4 py-3 shadow-sm">
-                <div className="flex items-end gap-3">
-                  <Textarea
-                    className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                    placeholder="선택한 pane에 보낼 명령 입력"
-                    value={commandInput}
-                    onChange={(event) => setCommandInput(event.target.value)}
-                  />
-                  <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
-                    {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
-                  </Button>
+                  <div className="min-h-0 flex-1 overflow-hidden px-0 pt-0 pb-0 md:px-4 md:pt-3 md:pb-3">
+                    <TerminalSurface
+                      ref={terminalRef}
+                      className="min-h-0 rounded-none bg-transparent p-0"
+                      mountClassName="h-full w-full"
+                      mode="stream"
+                      themeMode={resolvedThemeMode}
+                      selectedPaneId={selectedPaneId}
+                      statusMessage={selectedPaneId ? 'pane PTY 연결 중...' : '왼쪽 목록에서 세션을 선택해주세요.'}
+                      onInput={queueTerminalInput}
+                      onResize={queueTerminalResize}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-4 hidden w-full border-y border-border/70 bg-background/80 px-4 py-3 shadow-sm md:block md:rounded-[28px] md:border">
+                  <div className="flex items-end gap-3">
+                    <Textarea
+                      className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                      placeholder="선택한 pane에 보낼 명령 입력"
+                      value={commandInput}
+                      onChange={(event) => setCommandInput(event.target.value)}
+                    />
+                    <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
+                      {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </main>
-      </div>
+            )}
+          </SidebarInset>
         <Dialog open={activeDialog === 'session'} onOpenChange={(open) => setActiveDialog(open ? 'session' : 'none')}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Session 만들기</DialogTitle>
-              <DialogDescription>새 tmux session을 만듭니다.</DialogDescription>
+              <DialogTitle>세션 만들기</DialogTitle>
+              <DialogDescription>새 tmux 세션을 만듭니다.</DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
               <Input placeholder="예: dev-api" value={sessionName} onChange={(event) => setSessionName(event.target.value)} />
@@ -1286,10 +1448,9 @@ function App() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Window 만들기</DialogTitle>
-              <DialogDescription>{windowSessionName ? `${windowSessionName} session에 새 window를 만듭니다.` : '새 window를 만듭니다.'}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
-              <Input placeholder="window 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
+              <Input placeholder="Window 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
@@ -1301,14 +1462,54 @@ function App() {
           </DialogContent>
         </Dialog>
 
+
+        <Dialog open={mobileCommandOpen} onOpenChange={setMobileCommandOpen}>
+          <DialogContent
+            onPointerDownOutside={(event) => event.preventDefault()}
+            onInteractOutside={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>명령 입력</DialogTitle>
+            </DialogHeader>
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void sendCommand()
+              }}
+            >
+              <Textarea
+                ref={mobileCommandInputRef as unknown as React.RefObject<HTMLTextAreaElement>}
+                value={commandInput}
+                onChange={(event) => setCommandInput(event.target.value)}
+                placeholder="명령 입력"
+                className="min-h-28 resize-none"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                enterKeyHint="send"
+              />
+              <DialogFooter>
+                <Button variant="outline" type="button" onClick={() => setMobileCommandOpen(false)}>취소</Button>
+                <Button type="submit" disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
+                  {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+                  보내기
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+
         <Dialog open={activeDialog === 'rename-session'} onOpenChange={(open) => (open ? setActiveDialog('rename-session') : closeDialog())}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Session 이름 변경</DialogTitle>
-              <DialogDescription>{renameSourceName ? `${renameSourceName} session 이름을 변경합니다.` : 'session 이름을 변경합니다.'}</DialogDescription>
+              <DialogTitle>세션 이름 변경</DialogTitle>
+              <DialogDescription>{renameSourceName ? `${renameSourceName} 세션 이름을 변경합니다.` : '세션 이름을 변경합니다.'}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
-              <Input placeholder="session 이름" value={renameSessionName} onChange={(event) => setRenameSessionName(event.target.value)} />
+              <Input placeholder="세션 이름" value={renameSessionName} onChange={(event) => setRenameSessionName(event.target.value)} />
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
@@ -1324,9 +1525,9 @@ function App() {
         <AlertDialog open={sessionToKill !== null} onOpenChange={(open) => { if (!open) setSessionToKill(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Session 종료</AlertDialogTitle>
+              <AlertDialogTitle>세션 종료</AlertDialogTitle>
               <AlertDialogDescription>
-                {sessionToKill ? `${sessionToKill} session을 종료합니다. 실행 중인 window와 pane이 함께 닫힙니다.` : 'session을 종료합니다.'}
+                {sessionToKill ? `${sessionToKill} 세션을 종료합니다. 실행 중인 Window와 pane이 함께 닫힙니다.` : '세션을 종료합니다.'}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -1344,9 +1545,8 @@ function App() {
           </AlertDialogContent>
         </AlertDialog>
 
-        <Toaster theme={resolvedThemeMode} richColors closeButton />
-
-    </div>
+        <Toaster theme={resolvedThemeMode} richColors closeButton position="top-right" />
+    </SidebarProvider>
   );
 }
 

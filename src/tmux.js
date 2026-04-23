@@ -246,6 +246,11 @@ export async function createWindow(sessionName, name) {
   return { ok: true, sessionName, name };
 }
 
+export async function killWindow(windowId) {
+  await runTmux(['kill-window', '-t', windowId]);
+  return { ok: true, windowId };
+}
+
 export async function getPaneGeometry(targetPane) {
   const stdout = await runTmux([
     'display-message',

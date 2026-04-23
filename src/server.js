@@ -216,7 +216,7 @@ function validatePositiveIntegerField(value, fieldName) {
 }
 
 function createConfig(overrides = {}) {
-  const host = overrides.host ?? process.env.HOST ?? '127.0.0.1';
+  const host = overrides.host ?? process.env.HOST ?? '0.0.0.0';
   const port = Number(overrides.port ?? process.env.PORT ?? 4317);
   const dev = overrides.dev ?? process.argv.includes('--dev');
   const corsOrigin = overrides.corsOrigin ?? process.env.CORS_ORIGIN ?? '*';
@@ -581,6 +581,12 @@ export function createApp({
     const name = validateRequiredString(body.name, 'name');
     const result = await app.tmuxClient.createWindow(sessionName, name);
     reply.code(201);
+    return result;
+  });
+
+  app.delete('/api/windows/:id', async (request) => {
+    const windowId = request.params.id;
+    const result = await app.tmuxClient.killWindow(windowId);
     return result;
   });
 
