@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
   ArrowDown,
   ArrowUp,
   ChevronsRight,
-  Command,
-  X,
-  FolderOpen,
   LoaderCircle,
   LogIn,
   LogOut,
@@ -15,15 +11,16 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SendHorizontal,
   Sun,
   SquareTerminal,
   Trash2,
-  UserRound,
 } from 'lucide-react';
 
 import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -248,13 +245,14 @@ function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionNode[]>([]);
-  const [status, setStatus] = useState<StatusState>({ tone: 'secondary', message: '서버 연결 상태를 확인하는 중입니다.' });
+  const [, setStatus] = useState<StatusState>({ tone: 'secondary', message: '서버 연결 상태를 확인하는 중입니다.' });
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('');
   const [windowSessionName, setWindowSessionName] = useState('');
   const [windowName, setWindowName] = useState('');
   const [activeDialog, setActiveDialog] = useState<'none' | 'session' | 'window'>('none');
+  const [sessionToKill, setSessionToKill] = useState<string | null>(null);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [commandInput, setCommandInput] = useState('');
@@ -262,7 +260,6 @@ function App() {
   const [ptyState, setPtyState] = useState<LiveConnectionState>('idle');
   const [searchQuery, setSearchQuery] = useState('');
   const [treeQuery, setTreeQuery] = useState('');
-  const [openPaneIds, setOpenPaneIds] = useState<string[]>([]);
 
   const pendingResizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef('');
@@ -290,10 +287,6 @@ function App() {
     resolvedThemeMode === 'dark'
       ? 'border-white/8 bg-white/[0.04] text-slate-400 hover:bg-white/[0.07] hover:text-slate-200'
       : 'border-slate-200 bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700';
-  const tabCloseClassName =
-    resolvedThemeMode === 'dark'
-      ? 'text-slate-400 hover:bg-white/10 hover:text-slate-100'
-      : 'text-slate-500 hover:bg-slate-200 hover:text-slate-800';
 
   const navigate = useCallback((nextPath: string, replace = false) => {
     if (window.location.pathname === nextPath) {
@@ -385,7 +378,6 @@ function App() {
         setSessions([]);
         setSelectedPaneId(null);
         setPtyState('idle');
-        setOpenPaneIds([]);
         setStatus({ tone: 'secondary', message: '로그인이 필요합니다. 아이디와 비밀번호를 입력해주세요.' });
       } else {
         setStatus({ tone: 'destructive', message });
@@ -400,6 +392,10 @@ function App() {
   }, [refreshData]);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
+
     if (!currentUser && route.kind !== 'login') {
       navigate('/login', true);
       return;
@@ -408,7 +404,7 @@ function App() {
     if (currentUser && route.kind === 'login') {
       navigate('/', true);
     }
-  }, [currentUser, navigate, route.kind]);
+  }, [currentUser, loading, navigate, route.kind]);
 
   const selectedPaneMeta = useMemo<SelectedPaneMeta | null>(() => {
     if (!selectedPaneId) {
@@ -442,8 +438,6 @@ function App() {
       return;
     }
 
-    const firstPaneId = sessions[0]?.windows[0]?.panes[0]?.id ?? null;
-
     if (route.kind === 'pane') {
       const routePaneExists = sessions.some((session) =>
         session.name === route.sessionName && session.windows.some((windowNode) => windowNode.panes.some((pane) => pane.id === route.paneId)),
@@ -457,44 +451,18 @@ function App() {
       }
     }
 
-    if (!selectedPaneId && firstPaneId) {
-      setSelectedPaneId(firstPaneId);
+    if (route.kind === 'home') {
+      setSelectedPaneId(null);
     }
   }, [currentUser, route, selectedPaneId, sessions]);
 
-  useEffect(() => {
-    if (!currentUser || !selectedPaneMeta || route.kind !== 'home') {
-      return;
-    }
-
-    navigate(buildPanePath(selectedPaneMeta.sessionName, selectedPaneMeta.pane.id), true);
-  }, [currentUser, navigate, route.kind, selectedPaneMeta]);
 
   useEffect(() => {
-    if (!selectedPaneId) {
-      return;
-    }
-
-    setOpenPaneIds((current) => {
-      if (current.includes(selectedPaneId)) {
-        return current;
-      }
-
-      return [...current, selectedPaneId].slice(-8);
-    });
-  }, [selectedPaneId]);
-
-  useEffect(() => {
-    if (!selectedPaneId) {
-      return;
-    }
-
-    if (selectedPaneMeta) {
+    if (!selectedPaneId || selectedPaneMeta) {
       return;
     }
 
     setSelectedPaneId(null);
-    setOpenPaneIds((current) => current.filter((paneId) => paneId !== selectedPaneId));
   }, [selectedPaneId, selectedPaneMeta]);
 
   useEffect(() => {
@@ -523,6 +491,28 @@ function App() {
     },
     [navigate],
   );
+
+  const selectSession = useCallback((sessionName: string) => {
+    const session = sessions.find((entry) => entry.name === sessionName);
+    if (!session) {
+      return;
+    }
+
+    const activeWindow = session.windows.find((windowNode) => windowNode.active) ?? session.windows[0];
+    const targetPane = activeWindow?.panes.find((pane) => pane.active) ?? activeWindow?.panes[0];
+    if (targetPane) {
+      selectPane(session.name, targetPane.id);
+    }
+  }, [selectPane, sessions]);
+
+  const selectWindow = useCallback((sessionName: string, windowId: string) => {
+    const session = sessions.find((entry) => entry.name === sessionName);
+    const windowNode = session?.windows.find((entry) => entry.id === windowId);
+    const targetPane = windowNode?.panes.find((pane) => pane.active) ?? windowNode?.panes[0];
+    if (session && targetPane) {
+      selectPane(session.name, targetPane.id);
+    }
+  }, [selectPane, sessions]);
 
   const queueTerminalInput = useCallback(
     (data: string) => {
@@ -686,89 +676,30 @@ function App() {
     }
   }, [selectedPaneId]);
 
-  const openPanes = useMemo(() => {
-    return openPaneIds
-      .map((paneId) => {
-        for (const session of sessions) {
-          for (const windowNode of session.windows) {
-            for (const pane of windowNode.panes) {
-              if (pane.id === paneId) {
-                return {
-                  paneId,
-                  sessionName: session.name,
-                  windowLabel: `${windowNode.index}. ${windowNode.name}`,
-                  paneLabel: `패널 ${pane.index}`,
-                };
-              }
-            }
-          }
-        }
-
-        return null;
-      })
-      .filter((entry): entry is { paneId: string; sessionName: string; windowLabel: string; paneLabel: string } => entry !== null);
-  }, [openPaneIds, sessions]);
-
-  const { visibleOpenPanes, overflowOpenPanes } = useMemo(() => {
-    const maxVisibleTabs = 3;
-
-    if (openPanes.length <= maxVisibleTabs) {
-      return {
-        visibleOpenPanes: openPanes,
-        overflowOpenPanes: [] as typeof openPanes,
-      };
+  const selectedSessionNode = useMemo(() => {
+    const sessionName = selectedPaneMeta?.sessionName ?? (route.kind === 'pane' ? route.sessionName : null);
+    if (!sessionName) {
+      return null;
     }
 
-    const initialVisible = openPanes.slice(0, maxVisibleTabs);
-    const selectedIndex = openPanes.findIndex((pane) => pane.paneId === selectedPaneId);
+    return sessions.find((session) => session.name === sessionName) ?? null;
+  }, [route, selectedPaneMeta, sessions]);
 
-    if (selectedIndex === -1 || selectedIndex < maxVisibleTabs) {
-      return {
-        visibleOpenPanes: initialVisible,
-        overflowOpenPanes: openPanes.slice(maxVisibleTabs),
-      };
+  const visibleWindows = useMemo(() => {
+    if (!selectedSessionNode) {
+      return [] as WindowNode[];
     }
 
-    const selectedPane = openPanes[selectedIndex];
-    const nextVisible = [...openPanes.slice(0, maxVisibleTabs - 1), selectedPane];
-    const visibleIds = new Set(nextVisible.map((pane) => pane.paneId));
+    return selectedSessionNode.windows.slice(0, 4);
+  }, [selectedSessionNode]);
 
-    return {
-      visibleOpenPanes: nextVisible,
-      overflowOpenPanes: openPanes.filter((pane) => !visibleIds.has(pane.paneId)),
-    };
-  }, [openPanes, selectedPaneId]);
+  const overflowWindows = useMemo(() => {
+    if (!selectedSessionNode) {
+      return [] as WindowNode[];
+    }
 
-  const closePaneTab = useCallback((paneId: string) => {
-    setOpenPaneIds((current) => {
-      const closingIndex = current.indexOf(paneId);
-      const next = current.filter((id) => id !== paneId);
-
-      if (selectedPaneId === paneId) {
-        const fallbackPaneId =
-          next[Math.min(closingIndex, next.length - 1)] ??
-          next[next.length - 1] ??
-          null;
-        setSelectedPaneId(fallbackPaneId);
-
-        if (fallbackPaneId) {
-          for (const session of sessions) {
-            for (const windowNode of session.windows) {
-              const pane = windowNode.panes.find((candidate) => candidate.id === fallbackPaneId);
-              if (pane) {
-                navigate(buildPanePath(session.name, pane.id));
-                return next;
-              }
-            }
-          }
-        } else {
-          navigate('/');
-        }
-      }
-
-      return next;
-    });
-  }, [navigate, selectedPaneId, sessions]);
+    return selectedSessionNode.windows.slice(4);
+  }, [selectedSessionNode]);
 
   const filteredSessions = useMemo(() => {
     const query = treeQuery.trim().toLowerCase();
@@ -776,44 +707,7 @@ function App() {
       return sessions;
     }
 
-    return sessions
-      .map((session) => {
-        const sessionMatch = session.name.toLowerCase().includes(query);
-        const windows = session.windows
-          .map((windowNode) => {
-            const windowMatch = `${windowNode.index}. ${windowNode.name}`.toLowerCase().includes(query);
-            const panes = windowNode.panes.filter((pane) => {
-              const paneHaystack = [pane.id, `패널 ${pane.index}`, pane.currentCommand, pane.currentPath, pane.title]
-                .filter(Boolean)
-                .join(' ')
-                .toLowerCase();
-
-              return paneHaystack.includes(query);
-            });
-
-            if (sessionMatch || windowMatch) {
-              return windowNode;
-            }
-
-            if (panes.length === 0) {
-              return null;
-            }
-
-            return { ...windowNode, panes };
-          })
-          .filter((windowNode): windowNode is WindowNode => windowNode !== null);
-
-        if (sessionMatch) {
-          return session;
-        }
-
-        if (windows.length === 0) {
-          return null;
-        }
-
-        return { ...session, windows };
-      })
-      .filter((session): session is SessionNode => session !== null);
+    return sessions.filter((session) => session.name.toLowerCase().includes(query));
   }, [sessions, treeQuery]);
 
   const login = async () => {
@@ -847,17 +741,15 @@ function App() {
     setActiveDialog('session');
   };
 
-  const openWindowDialog = (presetSessionName?: string) => {
-    if (presetSessionName) {
-      setWindowSessionName(presetSessionName);
-    } else if (selectedPaneMeta?.sessionName) {
-      setWindowSessionName(selectedPaneMeta.sessionName);
-    }
+  const openWindowDialog = (presetSessionName: string) => {
+    setWindowSessionName(presetSessionName);
     setActiveDialog('window');
   };
 
   const closeDialog = () => {
     setActiveDialog('none');
+    setWindowSessionName('');
+    setWindowName('');
   };
 
   const logout = async () => {
@@ -871,7 +763,6 @@ function App() {
       setSelectedPaneId(null);
       setPtyState('idle');
       setCommandInput('');
-      setOpenPaneIds([]);
       setSearchQuery('');
       navigate('/login', true);
       setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
@@ -907,8 +798,13 @@ function App() {
     const normalizedSession = windowSessionName.trim();
     const normalizedWindow = windowName.trim();
 
-    if (!normalizedSession || !normalizedWindow) {
-      setStatus({ tone: 'destructive', message: '세션 이름과 창 이름을 모두 입력해주세요.' });
+    if (!normalizedSession) {
+      setStatus({ tone: 'destructive', message: '세션을 다시 선택해주세요.' });
+      return;
+    }
+
+    if (!normalizedWindow) {
+      setStatus({ tone: 'destructive', message: '창 이름을 입력해주세요.' });
       return;
     }
 
@@ -931,13 +827,10 @@ function App() {
   };
 
   const killSession = async (name: string) => {
-    if (!window.confirm(`${name} 세션을 종료할까요?`)) {
-      return;
-    }
-
     setBusyKey(`kill:${name}`);
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      setSessionToKill(null);
       setStatus({ tone: 'default', message: `${name} 세션을 종료했습니다.` });
       await refreshData();
     } catch (error) {
@@ -976,7 +869,7 @@ function App() {
 
   const runSearch = (direction: 'next' | 'previous') => {
     if (!searchQuery.trim()) {
-      setStatus({ tone: 'destructive', message: '검색어를 입력해주세요.' });
+      toast.error('검색어를 입력해주세요.');
       return;
     }
 
@@ -985,11 +878,11 @@ function App() {
       : terminalRef.current?.findPrevious(searchQuery.trim());
 
     if (!found) {
-      setStatus({ tone: 'secondary', message: `터미널에서 "${searchQuery.trim()}" 검색 결과를 찾지 못했습니다.` });
+      toast.message(`터미널에서 "${searchQuery.trim()}" 검색 결과를 찾지 못했습니다.`);
       return;
     }
 
-    setStatus({ tone: 'default', message: `터미널에서 "${searchQuery.trim()}" 검색 결과로 이동했습니다.` });
+    toast.success(`터미널에서 "${searchQuery.trim()}" 검색 결과로 이동했습니다.`);
   };
 
   const liveVariant = ptyState === 'error' ? 'destructive' : ptyState === 'live' ? 'default' : 'secondary';
@@ -999,26 +892,34 @@ function App() {
       <div className={isDark ? 'dark h-svh bg-background text-foreground' : 'h-svh bg-background text-foreground'}>
         <div className="flex h-full items-center justify-center px-4 py-8 sm:px-8">
           <div className="w-full max-w-md">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-3xl">tmux 웹 콘솔 로그인</CardTitle>
-                <CardDescription>아이디와 비밀번호로 로그인하세요.</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                  아이디
-                  <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" />
-                </label>
-                <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                  비밀번호
-                  <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" />
-                </label>
-                <Button onClick={() => void login()} disabled={busyKey === 'login'}>
-                  {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  로그인
-                </Button>
-              </CardContent>
-            </Card>
+            {loading ? (
+              <Card>
+                <CardContent className="flex min-h-48 items-center justify-center">
+                  <LoaderCircle className="size-6 animate-spin text-muted-foreground" />
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-3xl">tmux 웹 콘솔 로그인</CardTitle>
+                  <CardDescription>아이디와 비밀번호로 로그인하세요.</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-4">
+                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                    아이디
+                    <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" />
+                  </label>
+                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                    비밀번호
+                    <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" />
+                  </label>
+                  <Button onClick={() => void login()} disabled={busyKey === 'login'}>
+                    {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                    로그인
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </div>
@@ -1033,14 +934,14 @@ function App() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-semibold">tmux 웹 콘솔</h1>
-                <Badge variant="outline">{pathname}</Badge>
                 <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
+                <Badge variant="outline">{currentUser}</Badge>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline">
+                  <Button variant="outline" size="icon">
                     {themeIcon === Moon ? <Moon className="size-4" /> : <Sun className="size-4" />}
                   </Button>
                 </DropdownMenuTrigger>
@@ -1056,111 +957,113 @@ function App() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button variant="outline" onClick={() => void refreshData()} disabled={loading}>
+              <Button variant="outline" size="icon" onClick={() => void refreshData()} disabled={loading}>
                 {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               </Button>
-              <Button variant="outline" onClick={() => void logout()} disabled={busyKey === 'logout'}>
+              <Button variant="outline" size="icon" onClick={() => void logout()} disabled={busyKey === 'logout'}>
                 {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
               </Button>
             </div>
           </div>
         </header>
 
-        <main className="grid min-h-0 flex-1 gap-4 px-4 py-4 sm:px-6 lg:px-8 xl:grid-cols-[340px_minmax(0,1fr)_360px]">
+        <main className="min-h-0 flex-1 px-4 py-4 sm:px-6 lg:px-8">
+          {route.kind === 'home' ? (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {sessions.map((session) => (
+                <Card key={session.id}>
+                  <CardHeader>
+                    <CardTitle className="truncate">{session.name}</CardTitle>
+                    <CardDescription>
+                      창 {session.windows.length} · 패널 {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)} · 붙음 {session.attached}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {session.windows.map((windowNode) => (
+                      <div key={windowNode.id} className="rounded-lg border border-border/60 bg-background/50 p-3">
+                        <div className="mb-2 text-sm font-medium">
+                          {windowNode.index}. {windowNode.name}
+                        </div>
+                        <div className="grid gap-2">
+                          {windowNode.panes.map((pane) => (
+                            <button
+                              key={pane.id}
+                              type="button"
+                              onClick={() => selectPane(session.name, pane.id)}
+                              className="rounded-md border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted/40"
+                            >
+                              <div className="text-sm font-medium">{pane.id}</div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                {pane.currentCommand || '셸'} · {pane.currentPath || '-'}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="grid min-h-0 h-full gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
           <Card>
             <CardHeader>
               <CardTitle>세션 트리</CardTitle>
               <CardAction className="flex gap-2">
-                <Button variant="outline" onClick={openSessionDialog}>
-                  <Plus className="size-4" />
-                </Button>
-                <Button variant="outline" onClick={() => openWindowDialog()}>
+                <Button variant="outline" size="icon" onClick={openSessionDialog}>
                   <Plus className="size-4" />
                 </Button>
               </CardAction>
             </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+            <CardContent className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
               <div className="flex items-center gap-2">
                 <Search className="size-4 shrink-0 text-muted-foreground" />
-                <Input value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="세션 / 창 / 패널 검색" />
+                <Input value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="세션 검색" />
               </div>
-              <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border/70 bg-background/40">
+              <div className="min-h-0 flex-1 overflow-hidden">
                 <ScrollArea className="h-full">
-                <div className="divide-y divide-border/60">
+                <div className="grid gap-3">
                   {filteredSessions.length === 0 ? (
                     <div className="p-4 text-sm text-muted-foreground">
                       {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
                     </div>
                   ) : (
                     filteredSessions.map((session) => (
-                      <div key={session.id} className="min-w-0 bg-background/60">
-                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 bg-muted/30 px-3 py-2">
+                      <div key={session.id} className="min-w-0 overflow-hidden rounded-xl border border-border/70 bg-sidebar">
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-t-xl bg-sidebar px-3 py-2">
                           <div className="min-w-0 overflow-hidden">
                             <div className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold">{session.name}</div>
                             <div className="text-[11px] text-muted-foreground">창 {session.windows.length} · 붙음 {session.attached}</div>
                           </div>
                           <div className="flex items-center gap-1">
-                            <Button variant="ghost" onClick={() => openWindowDialog(session.name)}>
+                            <Button variant="ghost" size="icon" onClick={() => openWindowDialog(session.name)}>
                               <Plus className="size-4" />
                             </Button>
-                            <Button variant="ghost" onClick={() => void killSession(session.name)} disabled={busyKey === `kill:${session.name}`}>
+                            <Button variant="ghost" size="icon" onClick={() => setSessionToKill(session.name)} disabled={busyKey === `kill:${session.name}`}>
                               <Trash2 className="size-4" />
                             </Button>
                           </div>
                         </div>
 
-                        <div className="border-t border-border/50">
-                          {session.windows.map((windowNode) => (
-                            <div key={windowNode.id} className="min-w-0 border-b border-border/40 bg-card/20 last:border-b-0">
-                              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 bg-background/40 px-3 py-1.5">
-                                <div className="min-w-0 overflow-hidden">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="shrink-0 bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">창</span>
-                                    <div className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-xs font-medium text-foreground/90">
-                                      {windowNode.index}. {windowNode.name}
-                                    </div>
-                                  </div>
-                                </div>
-                                <span className="shrink-0 text-[11px] text-muted-foreground">패널 {windowNode.panes.length}</span>
-                              </div>
-
-                              <div className="border-t border-border/30">
-                                {windowNode.panes.map((pane) => {
-                                  const selected = pane.id === selectedPaneId;
-                                  return (
-                                    <button
-                                      key={pane.id}
-                                      type="button"
-                                      onClick={() => selectPane(session.name, pane.id)}
-                                      className={[
-                                        'block w-full min-w-0 overflow-hidden border-b border-border/20 px-3 py-1.5 text-left transition last:border-b-0',
-                                        selected
-                                          ? 'bg-primary/10 text-foreground'
-                                          : 'text-muted-foreground hover:bg-background/70 hover:text-foreground',
-                                      ].join(' ')}
-                                    >
-                                      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
-                                        <ChevronsRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                                        <div className="min-w-0 overflow-hidden">
-                                          <div className="flex items-center gap-1.5">
-                                            <span className="shrink-0 bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">패널</span>
-                                            <div className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-xs font-medium">{pane.id}</div>
-                                          </div>
-                                          <div className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-[11px]">{pane.currentCommand || '셸'} · {pane.currentPath || '-'}</div>
-                                        </div>
-                                        {pane.active ? (
-                                          <span className="ml-auto shrink-0 bg-primary/12 px-1.5 py-0.5 text-[10px] font-medium text-primary whitespace-nowrap">
-                                            활성
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => selectSession(session.name)}
+                          className={[
+                            'block w-full border-t border-border/50 px-3 py-2 text-left transition',
+                            selectedSessionNode?.id === session.id ? 'bg-primary/10 text-foreground' : 'hover:bg-sidebar-accent/40',
+                          ].join(' ')}
+                        >
+                          <div className="flex items-center gap-2">
+                            <ChevronsRight className="size-3.5 shrink-0 text-muted-foreground" />
+                            <span className="truncate text-sm text-muted-foreground">
+                              창 {session.windows.length}
+                              {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0) > 1
+                                ? ` · panes ${session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)}`
+                                : ''}
+                            </span>
+                          </div>
+                        </button>
                       </div>
                     ))
                   )}
@@ -1198,59 +1101,45 @@ function App() {
                 </div>
 
                 <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/70 ${terminalShellClassName}`}>
-                  {openPanes.length > 0 ? (
+                  {selectedSessionNode ? (
                     <div className={`px-2 pt-2 ${terminalStripClassName}`}>
                       <div className="flex min-w-0 items-end gap-1 pr-2">
-                          {visibleOpenPanes.map((paneEntry) => {
-                            const selected = paneEntry.paneId === selectedPaneId;
-                            return (
-                              <div
-                                key={paneEntry.paneId}
-                                className={[
-                                  'flex items-center gap-1 rounded-t-lg border border-b-0 px-2.5 py-1.5 text-xs shadow-[0_-1px_0_rgba(255,255,255,0.03)]',
-                                  selected ? selectedTabClassName : unselectedTabClassName,
-                                ].join(' ')}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => selectPane(paneEntry.sessionName, paneEntry.paneId)}
-                                  className="max-w-[16rem] truncate text-left"
+                        {visibleWindows.map((windowNode) => {
+                          const selected = selectedPaneMeta?.windowId === windowNode.id;
+                          return (
+                            <button
+                              key={windowNode.id}
+                              type="button"
+                              onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
+                              className={[
+                                'max-w-[16rem] truncate rounded-t-lg border border-b-0 px-2.5 py-1.5 text-left text-xs shadow-[0_-1px_0_rgba(255,255,255,0.03)]',
+                                selected ? selectedTabClassName : unselectedTabClassName,
+                              ].join(' ')}
+                            >
+                              {windowNode.index}. {windowNode.name}
+                            </button>
+                          );
+                        })}
+                        {overflowWindows.length > 0 ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon">
+                                <MoreHorizontal className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-72">
+                              {overflowWindows.map((windowNode) => (
+                                <DropdownMenuItem
+                                  key={windowNode.id}
+                                  onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
                                 >
-                                  {paneEntry.sessionName} · {paneEntry.windowLabel} · {paneEntry.paneLabel}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => closePaneTab(paneEntry.paneId)}
-                                  className={`rounded-sm p-0.5 transition ${tabCloseClassName}`}
-                                  aria-label={`${paneEntry.paneLabel} 닫기`}
-                                >
-                                  <X className="size-3.5" />
-                                </button>
-                              </div>
-                            );
-                          })}
-                          {overflowOpenPanes.length > 0 ? (
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost">
-                                  <MoreHorizontal className="size-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="w-72">
-                                {overflowOpenPanes.map((paneEntry) => (
-                                  <DropdownMenuItem
-                                    key={paneEntry.paneId}
-                                    onClick={() => selectPane(paneEntry.sessionName, paneEntry.paneId)}
-                                  >
-                                    <span className="truncate">
-                                      {paneEntry.sessionName} · {paneEntry.windowLabel} · {paneEntry.paneLabel}
-                                    </span>
-                                  </DropdownMenuItem>
-                                ))}
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          ) : null}
-                        </div>
+                                  <span className="truncate">{windowNode.index}. {windowNode.name}</span>
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
 
@@ -1267,40 +1156,26 @@ function App() {
                       onResize={queueTerminalResize}
                     />
                   </div>
+
+                  <div className={resolvedThemeMode === 'dark' ? 'border-t border-white/15 bg-white/[0.03] p-2' : 'border-t border-slate-300 bg-slate-100/80 p-2'}>
+                    <div className="flex items-end gap-3 rounded-lg bg-transparent px-1 py-1">
+                      <Textarea
+                        className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                        placeholder="선택한 패널에 보낼 명령 입력"
+                        value={commandInput}
+                        onChange={(event) => setCommandInput(event.target.value)}
+                      />
+                      <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
+                        {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>명령 전송</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Textarea placeholder="예: npm run dev" value={commandInput} onChange={(event) => setCommandInput(event.target.value)} />
-                <Button onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
-                  {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <Command className="size-4" />}
-                  명령 전송
-                </Button>
-              </CardContent>
-            </Card>
+            </div>
           </div>
-
-          <div className="min-h-0">
-            <Card className="overflow-hidden">
-              <CardHeader>
-                <CardTitle>현재 상태</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm leading-6 text-muted-foreground">{status.message}</p>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                  <InfoRow icon={UserRound} label="계정" value={currentUser ?? '-'} />
-                  <InfoRow icon={SquareTerminal} label="패널" value={selectedPaneMeta?.pane.id ?? '-'} />
-                  <InfoRow icon={Command} label="프로세스" value={selectedPaneMeta?.pane.currentCommand || '셸'} />
-                  <InfoRow icon={FolderOpen} label="경로" value={selectedPaneMeta?.pane.currentPath || '-'} />
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          )}
         </main>
       </div>
         <Dialog open={activeDialog === 'session'} onOpenChange={(open) => setActiveDialog(open ? 'session' : 'none')}>
@@ -1322,14 +1197,13 @@ function App() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={activeDialog === 'window'} onOpenChange={(open) => setActiveDialog(open ? 'window' : 'none')}>
+        <Dialog open={activeDialog === 'window'} onOpenChange={(open) => (open ? setActiveDialog('window') : closeDialog())}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>창 만들기</DialogTitle>
-              <DialogDescription>선택한 세션 또는 지정한 세션에 새 창을 만듭니다.</DialogDescription>
+              <DialogDescription>{windowSessionName ? `${windowSessionName} 세션에 새 창을 만듭니다.` : '새 창을 만듭니다.'}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
-              <Input placeholder="세션 이름" value={windowSessionName} onChange={(event) => setWindowSessionName(event.target.value)} />
               <Input placeholder="창 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
             </div>
             <DialogFooter>
@@ -1342,25 +1216,32 @@ function App() {
           </DialogContent>
         </Dialog>
 
+
+        <AlertDialog open={sessionToKill !== null} onOpenChange={(open) => { if (!open) setSessionToKill(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>세션 종료</AlertDialogTitle>
+              <AlertDialogDescription>
+                {sessionToKill ? `${sessionToKill} 세션을 종료합니다. 실행 중인 창과 패널이 함께 닫힙니다.` : '세션을 종료합니다.'}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>취소</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (sessionToKill) {
+                    void killSession(sessionToKill);
+                  }
+                }}
+              >
+                종료
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         <Toaster theme={resolvedThemeMode} richColors closeButton />
 
-    </div>
-  );
-}
-
-type InfoRowProps = {
-  icon: typeof Activity;
-  label: string;
-  value: string;
-};
-
-function InfoRow({ icon: Icon, label, value }: InfoRowProps) {
-  return (
-    <div className="rounded-xl border border-border/70 bg-background/60 p-3">
-      <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-        <Icon className="size-4" /> {label}
-      </div>
-      <div className="break-all text-sm font-medium">{value}</div>
     </div>
   );
 }
