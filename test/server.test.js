@@ -55,6 +55,9 @@ function buildTestApp(overrides = {}, options = {}) {
     async createWindow(sessionName, name) {
       return { ok: true, sessionName, name };
     },
+    async killWindow(windowId) {
+      return { ok: true, windowId };
+    },
     async getPaneGeometry() {
       return {
         sessionName: 'alpha',
@@ -267,6 +270,26 @@ test('command endpoint validates and forwards payload after login', async (t) =>
     targetPane: '%1',
     command: 'pwd',
     enter: true,
+  });
+});
+
+test('window delete endpoint validates and forwards payload after login', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
+
+  const cookieHeader = await loginAndGetCookie(app);
+  const response = await app.inject({
+    method: 'DELETE',
+    url: '/api/windows/%401',
+    headers: {
+      cookie: cookieHeader,
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    windowId: '@1',
   });
 });
 

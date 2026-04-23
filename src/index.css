@@ -133,7 +133,9 @@
   html,
   body,
   #root {
+    height: 100%;
     min-height: 100%;
+    overflow: hidden;
   }
 
   body {
@@ -150,6 +152,9 @@
   }
 }
 
-.terminal-surface .xterm-screen {
-  margin-inline: auto;
+
+@media (max-width: 768px) {
+  .terminal-surface .xterm-screen {
+    margin-inline: auto;
+  }
 }

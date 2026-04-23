@@ -189,7 +189,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
 
       const terminal = new Terminal({
         cursorBlink: true,
-        fontSize: 16,
+        fontSize: window.matchMedia('(max-width: 768px)').matches ? 13 : 16,
         lineHeight: 1,
         letterSpacing: 0,
         fontFamily: '"Monoplex KR Nerd", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
@@ -288,7 +288,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
   return (
     <div
       className={cn(
-        'terminal-surface h-full min-h-[28rem] w-full overflow-hidden rounded-xl p-2',
+        'terminal-surface h-full min-h-[28rem] w-full overflow-hidden rounded-xl p-0',
         themeMode === 'dark' ? 'bg-[#050816]' : 'bg-slate-50',
         className,
       )}
