@@ -140,6 +140,12 @@ function summarizeError(error: unknown) {
   return '알 수 없는 오류가 발생했습니다.';
 }
 
+function reportError(error: unknown) {
+  const message = summarizeError(error)
+  toast.error(message)
+  return message
+}
+
 function createAppError(message: string, statusCode?: number) {
   const error = new Error(message) as AppError;
   error.statusCode = statusCode;
@@ -194,6 +200,7 @@ function buildPanePath(sessionName: string, paneId: string) {
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
+
 
 function getRetryToastCopy(label: string, attempt: number, retries: number) {
   if (label === '터미널 연결') {
@@ -286,6 +293,9 @@ function App() {
   const [windowName, setWindowName] = useState('');
   const [activeDialog, setActiveDialog] = useState<'none' | 'session' | 'window' | 'rename-session'>('none');
   const [sessionToKill, setSessionToKill] = useState<string | null>(null);
+  const [sessionKillDialogOpen, setSessionKillDialogOpen] = useState(false);
+  const [windowToKill, setWindowToKill] = useState<{ id: string; name: string } | null>(null);
+  const [windowKillDialogOpen, setWindowKillDialogOpen] = useState(false);
   const [renameSourceName, setRenameSourceName] = useState('');
   const [renameSessionName, setRenameSessionName] = useState('');
   const [mobileCommandOpen, setMobileCommandOpen] = useState(false);
@@ -298,6 +308,7 @@ function App() {
   const [ptyState, setPtyState] = useState<LiveConnectionState>('idle');
   const [searchQuery, setSearchQuery] = useState('');
   const [treeQuery, setTreeQuery] = useState('');
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
   const [recentSessionNames, setRecentSessionNames] = useState<string[]>(() => {
     if (typeof window === 'undefined') {
       return [];
@@ -713,6 +724,7 @@ function App() {
 
             setPtyState('error');
             setStatus({ tone: 'destructive', message: payload.error });
+            toast.error(payload.error);
           }
         };
 
@@ -724,6 +736,7 @@ function App() {
 
           setPtyState('error');
           setStatus({ tone: 'destructive', message: 'PTY WebSocket 연결 중 오류가 발생했습니다.' });
+          toast.error('PTY WebSocket 연결 중 오류가 발생했습니다.');
         };
 
         socket.onclose = () => {
@@ -752,7 +765,7 @@ function App() {
       }
 
       setPtyState('error');
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     });
 
     return () => {
@@ -793,12 +806,13 @@ function App() {
   const sessionWindows = selectedSessionNode?.windows ?? [];
 
   const filteredSessions = useMemo(() => {
+    const orderedSessions = [...sessions].reverse()
     const query = treeQuery.trim().toLowerCase();
     if (!query) {
-      return sessions;
+      return orderedSessions;
     }
 
-    return sessions.filter((session) => session.name.toLowerCase().includes(query));
+    return orderedSessions.filter((session) => session.name.toLowerCase().includes(query));
   }, [sessions, treeQuery]);
 
   const recentSessions = useMemo(() => {
@@ -830,7 +844,7 @@ function App() {
       navigate('/', true);
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -874,7 +888,7 @@ function App() {
       navigate('/login', true);
       setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -895,7 +909,7 @@ function App() {
       setStatus({ tone: 'default', message: `세션 ${name} 을(를) 만들었습니다.` });
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -927,7 +941,7 @@ function App() {
       setStatus({ tone: 'default', message: `${normalizedSession} 세션에 ${normalizedWindow} Window를 만들었습니다.` });
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -946,6 +960,7 @@ function App() {
     setBusyKey(`kill-window:${windowId}`);
     try {
       await apiRequest(`/api/windows/${encodeURIComponent(windowId)}`, { method: 'DELETE' });
+      setWindowKillDialogOpen(false);
       await refreshData();
 
       if (shouldLeaveRoute) {
@@ -956,7 +971,7 @@ function App() {
         }
       }
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -984,7 +999,7 @@ function App() {
       }
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -994,11 +1009,11 @@ function App() {
     setBusyKey(`kill:${name}`);
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      setSessionToKill(null);
+      setSessionKillDialogOpen(false);
       setStatus({ tone: 'default', message: `${name} 세션을 종료했습니다.` });
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -1025,7 +1040,7 @@ function App() {
       setCommandInput('');
       setStatus({ tone: 'default', message: `${selectedPaneId} pane에 명령어를 전송했습니다.` });
     } catch (error) {
-      setStatus({ tone: 'destructive', message: summarizeError(error) });
+      setStatus({ tone: 'destructive', message: reportError(error) });
     } finally {
       setBusyKey(null);
     }
@@ -1125,42 +1140,40 @@ function App() {
                     ) : (
                       filteredSessions.map((session) => {
                         const selected = selectedSessionNode?.id === session.id
-                        const totalPanes = session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)
-
                         return (
                           <SidebarMenuItem key={session.id}>
-                            <div className="group relative">
-                              <SidebarMenuButton asChild isActive={selected} className="h-auto min-w-0 items-start py-3 pr-20">
+                            <div
+                              className="relative"
+                              onMouseEnter={() => setHoveredSessionId(session.id)}
+                              onMouseLeave={() => setHoveredSessionId((current) => (current === session.id ? null : current))}
+                            >
+                              <SidebarMenuButton
+                                asChild
+                                isActive={selected}
+                                className={[
+                                  'h-auto min-w-0 items-start py-3',
+                                  hoveredSessionId === session.id ? 'pr-20' : '',
+                                ].join(' ')}
+                              >
                                 <button type="button" onClick={() => selectSession(session.name)}>
                                   <div className="truncate text-sm font-medium">{session.name}</div>
-                                  <div className="mt-1 truncate text-xs text-muted-foreground">
-                                    Window {session.windows.length}
-                                    {totalPanes > 1 ? ` · panes ${totalPanes}` : ''}
-                                    {session.attached > 0 ? ` · 연결 ${session.attached}` : ''}
-                                  </div>
                                 </button>
                               </SidebarMenuButton>
-                              <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1 pointer-events-auto opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                                <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openRenameSessionDialog(session.name); }}>
-                                  <Pencil className="size-4" />
-                                </Button>
-                                <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSessionToKill(session.name); }}>
-                                  <Trash2 className="size-4" />
-                                </Button>
-                              </div>
+                              {hoveredSessionId === session.id ? (
+                                <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1">
+                                  <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openRenameSessionDialog(session.name); }}>
+                                    <Pencil className="size-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSessionToKill(session.name); setSessionKillDialogOpen(true); }}>
+                                    <Trash2 className="size-4" />
+                                  </Button>
+                                </div>
+                              ) : null}
                             </div>
                           </SidebarMenuItem>
                         )
                       })
                     )}
-                    <SidebarMenuItem>
-                      <SidebarMenuButton asChild variant="outline" className="h-auto border-dashed py-3">
-                        <button type="button" onClick={openSessionDialog}>
-                          <div className="truncate text-sm font-medium">새 세션</div>
-                          <div className="mt-1 text-xs text-muted-foreground">바로 만들기</div>
-                        </button>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -1365,7 +1378,7 @@ function App() {
                                   onClick={(event) => {
                                     event.preventDefault()
                                     event.stopPropagation()
-                                    void closeWindow(windowNode.id)
+                                    setWindowToKill({ id: windowNode.id, name: windowNode.name }); setWindowKillDialogOpen(true)
                                   }}
                                   className={[
                                     'absolute left-1 top-1/2 z-20 -translate-y-1/2 rounded-none p-1 text-muted-foreground transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 md:left-1.5 md:rounded-lg md:p-1.5 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100',
@@ -1409,13 +1422,18 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mt-4 hidden w-full border-y border-border/70 bg-background/80 px-4 py-3 shadow-sm md:block md:rounded-[28px] md:border">
+                <div className="mt-4 hidden w-full border-y border-border/70 bg-background/80 px-4 py-3 md:block md:rounded-[28px] md:border">
                   <div className="flex items-end gap-3">
                     <Textarea
-                      className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                      placeholder="선택한 pane에 보낼 명령 입력"
+                      className="min-h-28 flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                      placeholder="명령 입력"
                       value={commandInput}
                       onChange={(event) => setCommandInput(event.target.value)}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      enterKeyHint="send"
                     />
                     <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
                       {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
@@ -1522,7 +1540,31 @@ function App() {
         </Dialog>
 
 
-        <AlertDialog open={sessionToKill !== null} onOpenChange={(open) => { if (!open) setSessionToKill(null); }}>
+
+        <AlertDialog open={windowKillDialogOpen} onOpenChange={setWindowKillDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Window 종료</AlertDialogTitle>
+              <AlertDialogDescription>
+                {windowToKill ? `${windowToKill.name} Window를 종료합니다.` : 'Window를 종료합니다.'}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>취소</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (windowToKill) {
+                    void closeWindow(windowToKill.id)
+                  }
+                }}
+              >
+                종료
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={sessionKillDialogOpen} onOpenChange={setSessionKillDialogOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>세션 종료</AlertDialogTitle>
