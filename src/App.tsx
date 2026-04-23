@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
-  ChevronsRight,
   LoaderCircle,
   LogIn,
   LogOut,
   MoreHorizontal,
   Moon,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -192,6 +192,33 @@ function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function getRetryToastCopy(label: string, attempt: number, retries: number) {
+  if (label === '터미널 연결') {
+    return {
+      id: 'retry:pty-connect',
+      loading: `터미널 연결을 다시 시도하는 중... (${attempt}/${retries})`,
+      success: `터미널 연결을 다시 시도합니다.`,
+      error: `터미널 연결 재시도 준비에 실패했습니다.`,
+    };
+  }
+
+  if (label === '세션 목록') {
+    return {
+      id: 'retry:sessions',
+      loading: `세션 목록을 다시 불러오는 중... (${attempt}/${retries})`,
+      success: `세션 목록을 다시 불러옵니다.`,
+      error: `세션 목록 재시도 준비에 실패했습니다.`,
+    };
+  }
+
+  return {
+    id: `retry:${label}`,
+    loading: `${label} 재시도 중... (${attempt}/${retries})`,
+    success: `${label} 다시 시도합니다.`,
+    error: `${label} 재시도 준비에 실패했습니다.`,
+  };
+}
+
 async function withReadRetry<T>(
   label: string,
   run: () => Promise<T>,
@@ -227,11 +254,13 @@ async function withReadRetry<T>(
         await delay(350 * attempt);
         return attempt;
       })();
+      const retryToastCopy = getRetryToastCopy(label, attempt, retries);
 
       await toast.promise(retryPromise, {
-        loading: `${label} 재시도 중... (${attempt}/${retries})`,
-        success: `${label} 다시 시도합니다.`,
-        error: `${label} 재시도 준비에 실패했습니다.`,
+        id: retryToastCopy.id,
+        loading: retryToastCopy.loading,
+        success: retryToastCopy.success,
+        error: retryToastCopy.error,
       });
     }
   }
@@ -251,8 +280,10 @@ function App() {
   const [sessionName, setSessionName] = useState('');
   const [windowSessionName, setWindowSessionName] = useState('');
   const [windowName, setWindowName] = useState('');
-  const [activeDialog, setActiveDialog] = useState<'none' | 'session' | 'window'>('none');
+  const [activeDialog, setActiveDialog] = useState<'none' | 'session' | 'window' | 'rename-session'>('none');
   const [sessionToKill, setSessionToKill] = useState<string | null>(null);
+  const [renameSourceName, setRenameSourceName] = useState('');
+  const [renameSessionName, setRenameSessionName] = useState('');
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [commandInput, setCommandInput] = useState('');
@@ -576,6 +607,22 @@ function App() {
         const socket = new WebSocket(`${protocol}//${window.location.host}/api/pty/socket?${params.toString()}`);
 
         let ready = false;
+        let settled = false;
+        const rejectOnce = (error: AppError) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(error);
+        };
+        const resolveOnce = (nextSocket: WebSocket) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(nextSocket);
+        };
+
         activeSocket = socket;
         ptySocketRef.current = socket;
 
@@ -594,7 +641,7 @@ function App() {
             setPtyState('live');
             terminalRef.current?.clear();
             setStatus({ tone: 'default', message: `${payload.sessionName} 세션 PTY에 연결했습니다.` });
-            resolve(socket);
+            resolveOnce(socket);
             return;
           }
 
@@ -612,7 +659,7 @@ function App() {
 
           if (payload.type === 'error' && payload.error) {
             if (!ready) {
-              reject(createAppError(payload.error));
+              rejectOnce(createAppError(payload.error));
               return;
             }
 
@@ -623,7 +670,7 @@ function App() {
 
         socket.onerror = () => {
           if (!ready) {
-            reject(createAppError('PTY WebSocket 연결 중 오류가 발생했습니다.'));
+            rejectOnce(createAppError('PTY WebSocket 연결 중 오류가 발생했습니다.'));
             return;
           }
 
@@ -637,7 +684,7 @@ function App() {
           }
 
           if (!ready) {
-            reject(createAppError('PTY WebSocket 연결이 닫혔습니다.'));
+            rejectOnce(createAppError('PTY WebSocket 연결이 닫혔습니다.'));
             return;
           }
 
@@ -750,6 +797,14 @@ function App() {
     setActiveDialog('none');
     setWindowSessionName('');
     setWindowName('');
+    setRenameSourceName('');
+    setRenameSessionName('');
+  };
+
+  const openRenameSessionDialog = (name: string) => {
+    setRenameSourceName(name);
+    setRenameSessionName(name);
+    setActiveDialog('rename-session');
   };
 
   const logout = async () => {
@@ -799,12 +854,12 @@ function App() {
     const normalizedWindow = windowName.trim();
 
     if (!normalizedSession) {
-      setStatus({ tone: 'destructive', message: '세션을 다시 선택해주세요.' });
+      setStatus({ tone: 'destructive', message: 'session을 다시 선택해주세요.' });
       return;
     }
 
     if (!normalizedWindow) {
-      setStatus({ tone: 'destructive', message: '창 이름을 입력해주세요.' });
+      setStatus({ tone: 'destructive', message: 'window 이름을 입력해주세요.' });
       return;
     }
 
@@ -817,7 +872,35 @@ function App() {
       setWindowSessionName('');
       setWindowName('');
       closeDialog();
-      setStatus({ tone: 'default', message: `${normalizedSession} 세션에 ${normalizedWindow} 창을 만들었습니다.` });
+      setStatus({ tone: 'default', message: `${normalizedSession} session에 ${normalizedWindow} window를 만들었습니다.` });
+      await refreshData();
+    } catch (error) {
+      setStatus({ tone: 'destructive', message: summarizeError(error) });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const renameSession = async () => {
+    const sourceName = renameSourceName.trim();
+    const nextName = renameSessionName.trim();
+
+    if (!sourceName || !nextName) {
+      setStatus({ tone: 'destructive', message: 'Session 이름을 입력해주세요.' });
+      return;
+    }
+
+    setBusyKey(`rename:${sourceName}`);
+    try {
+      await apiRequest(`/api/sessions/${encodeURIComponent(sourceName)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: nextName }),
+      });
+      closeDialog();
+      setStatus({ tone: 'default', message: `${sourceName} session 이름을 ${nextName}(으)로 변경했습니다.` });
+      if (selectedSessionNode?.name === sourceName && selectedPaneId) {
+        navigate(buildPanePath(nextName, selectedPaneId), true);
+      }
       await refreshData();
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
@@ -831,7 +914,7 @@ function App() {
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
       setSessionToKill(null);
-      setStatus({ tone: 'default', message: `${name} 세션을 종료했습니다.` });
+      setStatus({ tone: 'default', message: `${name} session을 종료했습니다.` });
       await refreshData();
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
@@ -842,7 +925,7 @@ function App() {
 
   const sendCommand = async () => {
     if (!selectedPaneId) {
-      setStatus({ tone: 'destructive', message: '왼쪽 목록에서 패널을 먼저 선택해주세요.' });
+      setStatus({ tone: 'destructive', message: '왼쪽 목록에서 pane을 먼저 선택해주세요.' });
       return;
     }
 
@@ -859,7 +942,7 @@ function App() {
         body: JSON.stringify({ targetPane: selectedPaneId, command, enter: true }),
       });
       setCommandInput('');
-      setStatus({ tone: 'default', message: `${selectedPaneId} 패널에 명령어를 전송했습니다.` });
+      setStatus({ tone: 'default', message: `${selectedPaneId} pane에 명령어를 전송했습니다.` });
     } catch (error) {
       setStatus({ tone: 'destructive', message: summarizeError(error) });
     } finally {
@@ -928,17 +1011,78 @@ function App() {
 
   return (
     <div className={isDark ? 'dark h-svh bg-background text-foreground' : 'h-svh bg-background text-foreground'}>
-      <div className="flex h-full min-h-0 flex-col">
-        <header className="border-b border-border/70 bg-card/70 backdrop-blur">
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 lg:px-8">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-semibold">tmux 웹 콘솔</h1>
-                <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
-                <Badge variant="outline">{currentUser}</Badge>
+      <div className="grid h-full min-h-0 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col border-r border-border/60 bg-sidebar/70">
+          <div className="border-b border-border/60 px-3 py-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold">tmux 웹 콘솔</div>
+                <div className="text-xs text-muted-foreground">{currentUser}</div>
               </div>
+              <Button variant="outline" size="icon" onClick={openSessionDialog}>
+                <Plus className="size-4" />
+              </Button>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-2xl bg-background/80 px-3">
+              <Search className="size-4 shrink-0 text-muted-foreground" />
+              <Input
+                value={treeQuery}
+                onChange={(event) => setTreeQuery(event.target.value)}
+                placeholder="세션 검색"
+                className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+              />
+            </div>
+          </div>
+
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="divide-y divide-border/40">
+              {filteredSessions.length === 0 ? (
+                <div className="px-4 py-4 text-sm text-muted-foreground">
+                  {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
+                </div>
+              ) : (
+                filteredSessions.map((session) => {
+                  const selected = selectedSessionNode?.id === session.id;
+                  const totalPanes = session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0);
+                  return (
+                    <div
+                      key={session.id}
+                      className={[
+                        'group flex items-start gap-2 px-4 py-3 transition',
+                        selected ? 'bg-sidebar-accent text-foreground' : 'hover:bg-sidebar-accent/60',
+                      ].join(' ')}
+                    >
+                      <button type="button" onClick={() => selectSession(session.name)} className="min-w-0 flex-1 text-left">
+                        <div className="truncate text-sm font-medium">{session.name}</div>
+                        <div className="mt-1 truncate text-xs text-muted-foreground">
+                          window {session.windows.length}
+                          {totalPanes > 1 ? ` · panes ${totalPanes}` : ''}
+                          {session.attached > 0 ? ` · 연결 ${session.attached}` : ''}
+                        </div>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1 opacity-70 transition group-hover:opacity-100">
+                        <Button variant="ghost" size="icon" onClick={() => openWindowDialog(session.name)}>
+                          <Plus className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => openRenameSessionDialog(session.name)} disabled={busyKey === `rename:${session.name}`}>
+                          <Pencil className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => setSessionToKill(session.name)} disabled={busyKey === `kill:${session.name}`}>
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="border-t border-border/60 p-3">
+            <div className="mb-3 flex items-center gap-2">
+              <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
+            </div>
+            <div className="flex items-center gap-2">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="icon">
@@ -965,224 +1109,165 @@ function App() {
               </Button>
             </div>
           </div>
-        </header>
+        </aside>
 
-        <main className="min-h-0 flex-1 px-4 py-4 sm:px-6 lg:px-8">
+        <main className="min-h-0 bg-background">
           {route.kind === 'home' ? (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {sessions.map((session) => (
-                <Card key={session.id}>
-                  <CardHeader>
-                    <CardTitle className="truncate">{session.name}</CardTitle>
-                    <CardDescription>
-                      창 {session.windows.length} · 패널 {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)} · 붙음 {session.attached}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {session.windows.map((windowNode) => (
-                      <div key={windowNode.id} className="rounded-lg border border-border/60 bg-background/50 p-3">
-                        <div className="mb-2 text-sm font-medium">
-                          {windowNode.index}. {windowNode.name}
-                        </div>
-                        <div className="grid gap-2">
-                          {windowNode.panes.map((pane) => (
-                            <button
-                              key={pane.id}
-                              type="button"
-                              onClick={() => selectPane(session.name, pane.id)}
-                              className="rounded-md border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted/40"
-                            >
-                              <div className="text-sm font-medium">{pane.id}</div>
-                              <div className="truncate text-xs text-muted-foreground">
-                                {pane.currentCommand || '셸'} · {pane.currentPath || '-'}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <div className="grid min-h-0 h-full gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-          <Card>
-            <CardHeader>
-              <CardTitle>세션 트리</CardTitle>
-              <CardAction className="flex gap-2">
-                <Button variant="outline" size="icon" onClick={openSessionDialog}>
-                  <Plus className="size-4" />
-                </Button>
-              </CardAction>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-              <div className="flex items-center gap-2">
-                <Search className="size-4 shrink-0 text-muted-foreground" />
-                <Input value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="세션 검색" />
+            <div className="mx-auto flex h-full max-w-5xl flex-col px-6 py-6">
+              <div className="mb-6">
+                <h1 className="text-2xl font-semibold">Sessions</h1>
+                <p className="mt-1 text-sm text-muted-foreground">접속할 session을 선택하거나 새로 만드세요.</p>
               </div>
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <ScrollArea className="h-full">
-                <div className="grid gap-3">
-                  {filteredSessions.length === 0 ? (
-                    <div className="p-4 text-sm text-muted-foreground">
-                      {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
-                    </div>
-                  ) : (
-                    filteredSessions.map((session) => (
-                      <div key={session.id} className="min-w-0 overflow-hidden rounded-xl border border-border/70 bg-sidebar">
-                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-t-xl bg-sidebar px-3 py-2">
-                          <div className="min-w-0 overflow-hidden">
-                            <div className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold">{session.name}</div>
-                            <div className="text-[11px] text-muted-foreground">창 {session.windows.length} · 붙음 {session.attached}</div>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Button variant="ghost" size="icon" onClick={() => openWindowDialog(session.name)}>
-                              <Plus className="size-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon" onClick={() => setSessionToKill(session.name)} disabled={busyKey === `kill:${session.name}`}>
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
-                        </div>
-
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {sessions.map((session) => (
+                  <Card key={session.id} className="rounded-2xl">
+                    <CardHeader>
+                      <CardTitle className="truncate">{session.name}</CardTitle>
+                      <CardDescription>
+                        window {session.windows.length} · pane {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)} · 연결 {session.attached}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <Button variant="outline" className="w-full justify-start" onClick={() => selectSession(session.name)}>
+                        session 열기
+                      </Button>
+                      {session.windows.slice(0, 3).map((windowNode) => (
                         <button
+                          key={windowNode.id}
                           type="button"
-                          onClick={() => selectSession(session.name)}
-                          className={[
-                            'block w-full border-t border-border/50 px-3 py-2 text-left transition',
-                            selectedSessionNode?.id === session.id ? 'bg-primary/10 text-foreground' : 'hover:bg-sidebar-accent/40',
-                          ].join(' ')}
+                          onClick={() => {
+                            const targetPane = windowNode.panes.find((pane) => pane.active) ?? windowNode.panes[0];
+                            if (targetPane) {
+                              selectPane(session.name, targetPane.id);
+                            }
+                          }}
+                          className="block w-full rounded-xl border border-border/60 bg-background px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted/40"
                         >
-                          <div className="flex items-center gap-2">
-                            <ChevronsRight className="size-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate text-sm text-muted-foreground">
-                              창 {session.windows.length}
-                              {session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0) > 1
-                                ? ` · panes ${session.windows.reduce((sum, windowNode) => sum + windowNode.panes.length, 0)}`
-                                : ''}
-                            </span>
+                          <div className="truncate text-sm font-medium">
+                            {windowNode.index}. {windowNode.name}
+                          </div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            panes {windowNode.panes.length}
                           </div>
                         </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-                </ScrollArea>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
-            </CardContent>
-          </Card>
-
-          <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>터미널</CardTitle>
-                <CardAction>
-                  <Badge variant="outline">{selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowIndex}. ${selectedPaneMeta.windowName}` : '패널 미선택'}</Badge>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-                <div className="grid gap-3 rounded-xl border border-border/70 bg-background/50 p-3 lg:grid-cols-[1fr_auto]">
-                  <div className="flex items-center gap-2">
-                    <Search className="size-4 text-muted-foreground" />
-                    <Input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="터미널 검색" />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button variant="outline" onClick={() => runSearch('previous')}>
-                      <ArrowUp className="size-4" /> 이전
-                    </Button>
-                    <Button variant="outline" onClick={() => runSearch('next')}>
-                      <ArrowDown className="size-4" /> 다음
-                    </Button>
-                    <Button variant="outline" onClick={() => terminalRef.current?.focus()}>
-                      <SquareTerminal className="size-4" /> 포커스
-                    </Button>
-                  </div>
-                </div>
-
-                <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/70 ${terminalShellClassName}`}>
-                  {selectedSessionNode ? (
-                    <div className={`px-2 pt-2 ${terminalStripClassName}`}>
-                      <div className="flex min-w-0 items-end gap-1 pr-2">
-                        {visibleWindows.map((windowNode) => {
-                          const selected = selectedPaneMeta?.windowId === windowNode.id;
-                          return (
-                            <button
-                              key={windowNode.id}
-                              type="button"
-                              onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
-                              className={[
-                                'max-w-[16rem] truncate rounded-t-lg border border-b-0 px-2.5 py-1.5 text-left text-xs shadow-[0_-1px_0_rgba(255,255,255,0.03)]',
-                                selected ? selectedTabClassName : unselectedTabClassName,
-                              ].join(' ')}
-                            >
-                              {windowNode.index}. {windowNode.name}
-                            </button>
-                          );
-                        })}
-                        {overflowWindows.length > 0 ? (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon">
-                                <MoreHorizontal className="size-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-72">
-                              {overflowWindows.map((windowNode) => (
-                                <DropdownMenuItem
-                                  key={windowNode.id}
-                                  onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
-                                >
-                                  <span className="truncate">{windowNode.index}. {windowNode.name}</span>
-                                </DropdownMenuItem>
-                              ))}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="min-h-0 flex-1 p-2">
-                    <TerminalSurface
-                      ref={terminalRef}
-                      className="min-h-0 rounded-none bg-transparent p-0"
-                      mountClassName="h-full w-full"
-                      mode="stream"
-                      themeMode={resolvedThemeMode}
-                      selectedPaneId={selectedPaneId}
-                      statusMessage={selectedPaneId ? '패널 PTY 연결 중...' : '왼쪽 목록에서 패널을 선택해주세요.'}
-                      onInput={queueTerminalInput}
-                      onResize={queueTerminalResize}
-                    />
-                  </div>
-
-                  <div className={resolvedThemeMode === 'dark' ? 'border-t border-white/15 bg-white/[0.03] p-2' : 'border-t border-slate-300 bg-slate-100/80 p-2'}>
-                    <div className="flex items-end gap-3 rounded-lg bg-transparent px-1 py-1">
-                      <Textarea
-                        className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
-                        placeholder="선택한 패널에 보낼 명령 입력"
-                        value={commandInput}
-                        onChange={(event) => setCommandInput(event.target.value)}
-                      />
-                      <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
-                        {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
             </div>
-          </div>
+          ) : (
+            <div className="flex h-full min-h-0 flex-col px-6 py-6">
+              <div className="mb-4 min-w-0">
+                <div className="truncate text-lg font-semibold">
+                  {selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowIndex}. ${selectedPaneMeta.windowName}` : 'pane 미선택'}
+                </div>
+                <div className="truncate text-sm text-muted-foreground">
+                  {selectedPaneMeta?.pane.currentCommand || '왼쪽 목록에서 session을 선택해주세요.'}
+                </div>
+              </div>
+
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 rounded-2xl border border-border/70 bg-background/80 px-3">
+                  <Search className="size-4 text-muted-foreground" />
+                  <Input
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="터미널 검색"
+                    className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                  />
+                </div>
+                <Button variant="outline" onClick={() => runSearch('previous')}>
+                  <ArrowUp className="size-4" /> 이전
+                </Button>
+                <Button variant="outline" onClick={() => runSearch('next')}>
+                  <ArrowDown className="size-4" /> 다음
+                </Button>
+                <Button variant="outline" onClick={() => terminalRef.current?.focus()}>
+                  <SquareTerminal className="size-4" /> 포커스
+                </Button>
+              </div>
+
+              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-border/70 ${terminalShellClassName}`}>
+                {selectedSessionNode ? (
+                  <div className={`px-3 pt-3 ${terminalStripClassName}`}>
+                    <div className="flex min-w-0 items-end gap-1 pr-2">
+                      {visibleWindows.map((windowNode) => {
+                        const selected = selectedPaneMeta?.windowId === windowNode.id;
+                        return (
+                          <button
+                            key={windowNode.id}
+                            type="button"
+                            onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
+                            className={[
+                              'max-w-[16rem] truncate rounded-t-lg border border-b-0 px-2.5 py-1.5 text-left text-xs shadow-[0_-1px_0_rgba(255,255,255,0.03)]',
+                              selected ? selectedTabClassName : unselectedTabClassName,
+                            ].join(' ')}
+                          >
+                            {windowNode.index}. {windowNode.name}
+                          </button>
+                        );
+                      })}
+                      {overflowWindows.length > 0 ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon">
+                              <MoreHorizontal className="size-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-72">
+                            {overflowWindows.map((windowNode) => (
+                              <DropdownMenuItem
+                                key={windowNode.id}
+                                onClick={() => selectWindow(selectedSessionNode.name, windowNode.id)}
+                              >
+                                <span className="truncate">{windowNode.index}. {windowNode.name}</span>
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="min-h-0 flex-1 px-4 pb-3">
+                  <TerminalSurface
+                    ref={terminalRef}
+                    className="min-h-0 rounded-none bg-transparent p-0"
+                    mountClassName="h-full w-full"
+                    mode="stream"
+                    themeMode={resolvedThemeMode}
+                    selectedPaneId={selectedPaneId}
+                    statusMessage={selectedPaneId ? 'pane PTY 연결 중...' : '왼쪽 목록에서 session을 선택해주세요.'}
+                    onInput={queueTerminalInput}
+                    onResize={queueTerminalResize}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[28px] border border-border/70 bg-background/80 px-4 py-3 shadow-sm">
+                <div className="flex items-end gap-3">
+                  <Textarea
+                    className="min-h-[3.25rem] flex-1 resize-none border-0 rounded-none bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                    placeholder="선택한 pane에 보낼 명령 입력"
+                    value={commandInput}
+                    onChange={(event) => setCommandInput(event.target.value)}
+                  />
+                  <Button size="icon" onClick={() => void sendCommand()} disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
+                    {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+                  </Button>
+                </div>
+              </div>
+            </div>
           )}
         </main>
       </div>
         <Dialog open={activeDialog === 'session'} onOpenChange={(open) => setActiveDialog(open ? 'session' : 'none')}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>세션 만들기</DialogTitle>
-              <DialogDescription>새 tmux 세션을 만듭니다.</DialogDescription>
+              <DialogTitle>Session 만들기</DialogTitle>
+              <DialogDescription>새 tmux session을 만듭니다.</DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
               <Input placeholder="예: dev-api" value={sessionName} onChange={(event) => setSessionName(event.target.value)} />
@@ -1200,11 +1285,11 @@ function App() {
         <Dialog open={activeDialog === 'window'} onOpenChange={(open) => (open ? setActiveDialog('window') : closeDialog())}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>창 만들기</DialogTitle>
-              <DialogDescription>{windowSessionName ? `${windowSessionName} 세션에 새 창을 만듭니다.` : '새 창을 만듭니다.'}</DialogDescription>
+              <DialogTitle>Window 만들기</DialogTitle>
+              <DialogDescription>{windowSessionName ? `${windowSessionName} session에 새 window를 만듭니다.` : '새 window를 만듭니다.'}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
-              <Input placeholder="창 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
+              <Input placeholder="window 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
@@ -1216,13 +1301,32 @@ function App() {
           </DialogContent>
         </Dialog>
 
+        <Dialog open={activeDialog === 'rename-session'} onOpenChange={(open) => (open ? setActiveDialog('rename-session') : closeDialog())}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Session 이름 변경</DialogTitle>
+              <DialogDescription>{renameSourceName ? `${renameSourceName} session 이름을 변경합니다.` : 'session 이름을 변경합니다.'}</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <Input placeholder="session 이름" value={renameSessionName} onChange={(event) => setRenameSessionName(event.target.value)} />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={closeDialog}>취소</Button>
+              <Button onClick={() => void renameSession()} disabled={busyKey === `rename:${renameSourceName}`}>
+                {busyKey === `rename:${renameSourceName}` ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
+                변경
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
 
         <AlertDialog open={sessionToKill !== null} onOpenChange={(open) => { if (!open) setSessionToKill(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>세션 종료</AlertDialogTitle>
+              <AlertDialogTitle>Session 종료</AlertDialogTitle>
               <AlertDialogDescription>
-                {sessionToKill ? `${sessionToKill} 세션을 종료합니다. 실행 중인 창과 패널이 함께 닫힙니다.` : '세션을 종료합니다.'}
+                {sessionToKill ? `${sessionToKill} session을 종료합니다. 실행 중인 window와 pane이 함께 닫힙니다.` : 'session을 종료합니다.'}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
