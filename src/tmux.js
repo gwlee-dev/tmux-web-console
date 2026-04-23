@@ -236,6 +236,11 @@ export async function killSession(name) {
   return { ok: true, name };
 }
 
+export async function renameSession(name, nextName) {
+  await runTmux(['rename-session', '-t', name, nextName]);
+  return { ok: true, name, nextName };
+}
+
 export async function createWindow(sessionName, name) {
   await runTmux(['new-window', '-t', sessionName, '-n', name]);
   return { ok: true, sessionName, name };

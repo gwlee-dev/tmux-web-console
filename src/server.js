@@ -567,6 +567,14 @@ export function createApp({
     return result;
   });
 
+  app.patch('/api/sessions/:name', async (request) => {
+    const name = request.params.name;
+    const body = await readJsonBody(request);
+    const nextName = validateRequiredString(body.name, 'name');
+    const result = await app.tmuxClient.renameSession(name, nextName);
+    return result;
+  });
+
   app.post('/api/windows', async (request, reply) => {
     const body = await readJsonBody(request);
     const sessionName = validateRequiredString(body.sessionName, 'sessionName');

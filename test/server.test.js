@@ -49,6 +49,9 @@ function buildTestApp(overrides = {}, options = {}) {
     async killSession(name) {
       return { ok: true, name };
     },
+    async renameSession(name, nextName) {
+      return { ok: true, name, nextName };
+    },
     async createWindow(sessionName, name) {
       return { ok: true, sessionName, name };
     },
@@ -264,6 +267,32 @@ test('command endpoint validates and forwards payload after login', async (t) =>
     targetPane: '%1',
     command: 'pwd',
     enter: true,
+  });
+});
+
+
+test('session rename endpoint validates and forwards payload after login', async (t) => {
+  const app = buildTestApp();
+  t.after(() => app.close());
+
+  const cookieHeader = await loginAndGetCookie(app);
+  const response = await app.inject({
+    method: 'PATCH',
+    url: '/api/sessions/alpha',
+    headers: {
+      cookie: cookieHeader,
+      'content-type': 'application/json',
+    },
+    payload: {
+      name: 'beta',
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    name: 'alpha',
+    nextName: 'beta',
   });
 });
 
