@@ -2,7 +2,7 @@
   "name": "tmux-web-console",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "yarn@1.22.22",
+  "packageManager": "yarn@4.14.1",
   "description": "Fastify API with a React + shadcn/ui frontend for controlling tmux sessions remotely",
   "type": "module",
   "scripts": {
