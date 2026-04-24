@@ -20,3 +20,19 @@ build/
 .next/
 out/
 coverage/
+
+# Test output
+test-results/
+playwright-report/
+.tmp-playwright/
+e2e/**/*.png
+!e2e/**/*.snap.png
+!e2e/**/*-snapshots/**/*.png
+
+# OMC / OMX / Claude tooling artifacts
+.omc/
+.omx/
+.claude/
+.yarn/
+state/
+
