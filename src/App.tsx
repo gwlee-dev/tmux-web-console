@@ -5,7 +5,7 @@ import {
   LoaderCircle,
   LogIn,
   LogOut,
-  Clipboard,
+  TextCursorInput,
   Moon,
   Pencil,
   Plus,
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 
 import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
+import { TerminalToolbar } from '@/components/terminal-toolbar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
@@ -1271,7 +1272,7 @@ function App() {
                     <Search className="size-4" />
                   </Button>
                   <Button variant={mobileCommandOpen ? 'default' : 'outline'} size="icon" onClick={() => setMobileCommandOpen(true)}>
-                    <Clipboard className="size-4" />
+                    <TextCursorInput className="size-4" />
                   </Button>
                   {selectedSessionNode ? (
                     <Button variant="outline" size="icon" onClick={() => openWindowDialog(selectedSessionNode.name)}>
@@ -1461,6 +1462,9 @@ function App() {
                       onResize={queueTerminalResize}
                     />
                   </div>
+                  {selectedPaneId ? (
+                    <TerminalToolbar onSend={queueTerminalInput} />
+                  ) : null}
                 </div>
 
                 <div className="mt-4 hidden w-full border-y border-border/70 bg-background/80 px-4 py-3 md:block md:rounded-[28px] md:border">

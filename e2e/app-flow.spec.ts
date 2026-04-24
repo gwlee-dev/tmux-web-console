@@ -180,14 +180,14 @@ test.describe("mobile flow", () => {
       timeout: 15000
     });
 
-    // Open mobile command dialog. The lucide v1.8 Clipboard icon renders as
-    // `<svg class="lucide-clipboard ...">`. Use an attribute-contains selector
-    // so we don't depend on exact token order.
-    const clipboardButton = page.locator(
-      'button:has(svg[class*="clipboard"])'
+    // Open mobile command drawer. The lucide TextCursorInput icon renders as
+    // `<svg class="lucide-text-cursor-input ...">`. Use an attribute-contains
+    // selector so we don't depend on exact token order.
+    const commandButton = page.locator(
+      'button:has(svg[class*="text-cursor-input"])'
     );
-    await expect(clipboardButton).toBeVisible({ timeout: 5000 });
-    await clipboardButton.first().click();
+    await expect(commandButton).toBeVisible({ timeout: 5000 });
+    await commandButton.first().click();
 
     // The mobile command surface is now a Drawer (vaul) — drawer.tsx emits
     // data-slot="drawer-content", which is distinct from sheet-content and
