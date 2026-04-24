@@ -3,8 +3,11 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ClipboardPaste,
+  Paperclip,
 } from 'lucide-react';
-import type { ComponentProps, ReactNode } from 'react';
+import { useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -18,7 +21,7 @@ type TerminalToolbarProps = {
 type ToolKeyProps = ComponentProps<typeof Button> & {
   label: ReactNode;
   hint?: string;
-  onPress: () => void;
+  onPress?: () => void;
 };
 
 function ToolKey({ label, hint, onPress, className, ...rest }: ToolKeyProps) {
@@ -45,17 +48,144 @@ function ToolKey({ label, hint, onPress, className, ...rest }: ToolKeyProps) {
   );
 }
 
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+/** xterm 에 안전하게 보낼 수 있도록 \r\n / \r 을 \n 으로 정규화. */
+function normalizePasteText(text: string) {
+  return text.replace(/\r\n?/g, '\n');
+}
+
+function quoteShellPath(p: string) {
+  // single quote 로 감싸고 내부 single quote 만 escape — 어떤 shell 에서도 안전.
+  return `'${p.replace(/'/g, "'\\''")}'`;
+}
+
+async function uploadFiles(files: FileList | File[]): Promise<string[]> {
+  const list = Array.from(files);
+  if (list.length === 0) {
+    return [];
+  }
+  const form = new FormData();
+  for (const file of list) {
+    form.append('file', file, file.name || 'upload');
+  }
+  const response = await fetch('/api/uploads', {
+    method: 'POST',
+    body: form,
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    let message = `업로드 실패 (${response.status})`;
+    try {
+      const data = (await response.json()) as { error?: string };
+      if (data?.error) message = data.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = (await response.json()) as { paths?: string[] };
+  return data.paths ?? [];
+}
+
 /**
  * 터미널 하단 도구 툴바.
  *
- * 모바일 소프트 키보드와 데스크톱 양쪽에서 자주 쓰는 ANSI/Ctrl 키와
- * 화살표를 한 줄에 노출한다. 클릭 시 PTY 로 raw bytes 만 보낸다.
- *
- * 주의: 클립보드 / 파일 업로드 버튼은 후속 커밋에서 추가된다 (이 컴포넌트
- * 의 onSend 만 사용하므로 호출부 변경 없이 props 확장 가능).
+ * 모바일 소프트 키보드와 데스크톱 양쪽에서 자주 쓰는 ANSI/Ctrl 키, 화살표,
+ * 클립보드 붙여넣기 (텍스트/이미지 자동), 일반 파일 업로드 버튼을 한 줄에
+ * 노출한다. 모든 액션은 PTY 로 raw bytes 를 보낸다 (`onSend`).
  */
 export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
   const send = (data: string) => onSend(data);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pasting, setPasting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const sendBracketedPaste = (text: string) => {
+    if (!text) return;
+    send(`${BRACKETED_PASTE_START}${normalizePasteText(text)}${BRACKETED_PASTE_END}`);
+  };
+
+  const sendPathsAsPaste = (paths: string[]) => {
+    if (paths.length === 0) return;
+    const joined = paths.map(quoteShellPath).join(' ');
+    sendBracketedPaste(joined);
+  };
+
+  const handlePaste = async () => {
+    if (pasting) return;
+    setPasting(true);
+    try {
+      // 텍스트만 필요하면 readText 가 OS 권한 프롬프트가 가벼움.
+      // 이미지가 있을 가능성을 위해 read() 도 시도. 일부 브라우저는 read() 에서
+      // image 미지원 또는 권한 거부 → readText 로 fallback.
+      let handled = false;
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.read) {
+        try {
+          const items = await navigator.clipboard.read();
+          const imageFiles: File[] = [];
+          let textPayload = '';
+          for (const item of items) {
+            const imageType = item.types.find((t) => t.startsWith('image/'));
+            if (imageType) {
+              const blob = await item.getType(imageType);
+              const ext = imageType.split('/')[1] || 'png';
+              const stamp = Date.now();
+              imageFiles.push(
+                new File([blob], `clipboard-${stamp}-${imageFiles.length}.${ext}`, {
+                  type: imageType,
+                }),
+              );
+            } else if (item.types.includes('text/plain')) {
+              const blob = await item.getType('text/plain');
+              textPayload += await blob.text();
+            }
+          }
+          if (imageFiles.length > 0) {
+            const paths = await uploadFiles(imageFiles);
+            sendPathsAsPaste(paths);
+            handled = true;
+          } else if (textPayload) {
+            sendBracketedPaste(textPayload);
+            handled = true;
+          }
+        } catch {
+          /* fall through to readText */
+        }
+      }
+      if (!handled && navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          sendBracketedPaste(text);
+          handled = true;
+        }
+      }
+      if (!handled) {
+        toast.error('클립보드가 비어 있거나 접근할 수 없습니다.');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '붙여넣기에 실패했습니다.');
+    } finally {
+      setPasting(false);
+    }
+  };
+
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    try {
+      const paths = await uploadFiles(files);
+      sendPathsAsPaste(paths);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '파일 업로드에 실패했습니다.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
 
   return (
     <div
@@ -79,6 +209,26 @@ export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
       <span className="mx-1 h-5 w-px shrink-0 bg-border/60" aria-hidden />
       <ToolKey label="PgUp" hint="Page Up" onPress={() => send('\x1b[5~')} />
       <ToolKey label="PgDn" hint="Page Down" onPress={() => send('\x1b[6~')} />
+      <span className="mx-1 h-5 w-px shrink-0 bg-border/60" aria-hidden />
+      <ToolKey
+        label={<ClipboardPaste className="size-3.5" />}
+        hint="클립보드 붙여넣기 (텍스트/이미지 자동)"
+        onPress={() => void handlePaste()}
+        disabled={pasting}
+      />
+      <ToolKey
+        label={<Paperclip className="size-3.5" />}
+        hint="파일 업로드 (Claude Code 등에 경로 전달)"
+        onPress={() => fileInputRef.current?.click()}
+        disabled={uploading}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => void handleFiles(event.target.files)}
+      />
     </div>
   );
 }
