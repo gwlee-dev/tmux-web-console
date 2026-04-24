@@ -124,26 +124,26 @@ export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
       if (typeof navigator !== 'undefined' && navigator.clipboard?.read) {
         try {
           const items = await navigator.clipboard.read();
-          const imageFiles: File[] = [];
+          let imageFile: File | null = null;
           let textPayload = '';
           for (const item of items) {
             const imageType = item.types.find((t) => t.startsWith('image/'));
-            if (imageType) {
+            if (imageType && !imageFile) {
+              // Claude Code 등은 한 번에 하나의 경로만 인식하므로 첫 번째
+              // 이미지만 업로드한다.
               const blob = await item.getType(imageType);
               const ext = imageType.split('/')[1] || 'png';
               const stamp = Date.now();
-              imageFiles.push(
-                new File([blob], `clipboard-${stamp}-${imageFiles.length}.${ext}`, {
-                  type: imageType,
-                }),
-              );
+              imageFile = new File([blob], `clipboard-${stamp}.${ext}`, {
+                type: imageType,
+              });
             } else if (item.types.includes('text/plain')) {
               const blob = await item.getType('text/plain');
               textPayload += await blob.text();
             }
           }
-          if (imageFiles.length > 0) {
-            const paths = await uploadFiles(imageFiles);
+          if (imageFile) {
+            const paths = await uploadFiles([imageFile]);
             sendPathsAsPaste(paths);
             handled = true;
           } else if (textPayload) {
@@ -225,7 +225,9 @@ export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
       <input
         ref={fileInputRef}
         type="file"
-        multiple
+        // Claude Code 등 CLI 툴이 한 줄에 들어온 여러 경로를 개별 파일로 인식
+        // 하지 못하므로 한 번에 하나씩만 고르도록 제한. 클립보드로 이미지를
+        // 여러 장 복사한 경우도 동일한 이유로 하나만 전송한다.
         className="hidden"
         onChange={(event) => void handleFiles(event.target.files)}
       />
