@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { SearchAddon } from '@xterm/addon-search';
 import type { ITheme, Terminal } from '@xterm/xterm';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 
 type PaneSnapshot = {
@@ -49,6 +50,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
   { snapshot, selectedPaneId, statusMessage, mode = 'snapshot', themeMode = 'dark', className, mountClassName, onInput, onResize },
   ref,
 ) {
+  const isMobile = useIsMobile();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -57,11 +59,13 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
   const onResizeRef = useRef(onResize);
   const snapshotRef = useRef(snapshot);
   const statusMessageRef = useRef(statusMessage);
+  const isMobileRef = useRef(isMobile);
 
   onInputRef.current = onInput;
   onResizeRef.current = onResize;
   snapshotRef.current = snapshot;
   statusMessageRef.current = statusMessage;
+  isMobileRef.current = isMobile;
 
   const getTheme = (): ITheme =>
     themeMode === 'dark'
@@ -189,7 +193,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
 
       const terminal = new Terminal({
         cursorBlink: true,
-        fontSize: window.matchMedia('(max-width: 768px)').matches ? 13 : 16,
+        fontSize: isMobileRef.current ? 13 : 16,
         lineHeight: 1,
         letterSpacing: 0,
         fontFamily: '"Monoplex KR Nerd", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
