@@ -39,7 +39,7 @@ const CONTROL_CHARACTER_MAP = new Map([
   ['\u007f', 'BSpace'],
 ]);
 
-function parseTable(stdout, columns) {
+export function parseTable(stdout, columns) {
   return stdout
     .trim()
     .split('\n')
@@ -50,7 +50,7 @@ function parseTable(stdout, columns) {
     });
 }
 
-function tokenizeInput(input) {
+export function tokenizeInput(input) {
   const tokens = [];
   let literalBuffer = '';
   let index = 0;
@@ -128,13 +128,14 @@ export async function listSessions() {
   const stdout = await runTmux([
     'list-sessions',
     '-F',
-    '#{session_id}\t#{session_name}\t#{session_windows}\t#{session_attached}',
+    '#{session_id}\t#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}',
   ]);
 
-  return parseTable(stdout, ['id', 'name', 'windows', 'attached']).map((session) => ({
+  return parseTable(stdout, ['id', 'name', 'windows', 'attached', 'created']).map((session) => ({
     ...session,
     windows: Number(session.windows),
     attached: Number(session.attached),
+    created: Number(session.created),
   }));
 }
 
@@ -390,4 +391,6 @@ export default {
   sendCommand,
   sendInput,
   resizePane,
+  parseTable,
+  tokenizeInput,
 };
