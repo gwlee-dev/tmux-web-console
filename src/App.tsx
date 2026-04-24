@@ -5,6 +5,7 @@ import {
   LoaderCircle,
   LogIn,
   LogOut,
+  Bug,
   TextCursorInput,
   Moon,
   Pencil,
@@ -302,6 +303,24 @@ function App() {
   const [renameSessionName, setRenameSessionName] = useState('');
   const [mobileCommandOpen, setMobileCommandOpen] = useState(false);
   const [mobileSearchBarOpen, setMobileSearchBarOpen] = useState(false);
+  const [debugMode, setDebugMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('debug_mode') === '1';
+  });
+  const toggleDebugMode = useCallback(() => {
+    setDebugMode((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        if (next) {
+          window.localStorage.setItem('debug_mode', '1');
+        } else {
+          window.localStorage.removeItem('debug_mode');
+        }
+      }
+      return next;
+    });
+  }, []);
+  const isDev = import.meta.env.DEV;
   const [mobileSearchFocused, setMobileSearchFocused] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -1262,6 +1281,17 @@ function App() {
               <button type="button" onClick={() => navigate('/')} className="min-w-0 flex-1 truncate text-left text-sm font-semibold">
                 {selectedPaneMeta ? `${selectedPaneMeta.sessionName} / ${selectedPaneMeta.windowName}` : 'tmux 웹 콘솔'}
               </button>
+              {isDev ? (
+                <Button
+                  variant={debugMode ? 'default' : 'outline'}
+                  size="icon"
+                  onClick={toggleDebugMode}
+                  aria-label="디버그 모드"
+                  title="디버그 모드"
+                >
+                  <Bug className="size-4" />
+                </Button>
+              ) : null}
               {route.kind === 'home' ? (
                 <Button variant="outline" size="icon" onClick={openSessionDialog}>
                   <Plus className="size-4" />
@@ -1362,6 +1392,17 @@ function App() {
                           <Plus className="size-4" /> 새 Window
                         </Button>
                       ) : null}
+                      {isDev ? (
+                        <Button
+                          variant={debugMode ? 'default' : 'outline'}
+                          size="icon"
+                          onClick={toggleDebugMode}
+                          aria-label="디버그 모드"
+                          title="디버그 모드"
+                        >
+                          <Bug className="size-4" />
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1460,6 +1501,7 @@ function App() {
                       statusMessage={selectedPaneId ? 'pane PTY 연결 중...' : '왼쪽 목록에서 세션을 선택해주세요.'}
                       onInput={queueTerminalInput}
                       onResize={queueTerminalResize}
+                      debug={debugMode}
                     />
                   </div>
                   {selectedPaneId ? (
