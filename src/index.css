@@ -164,7 +164,13 @@
 .xterm,
 .xterm .xterm-rows,
 .xterm .xterm-rows span {
-  font-family: 'Monoplex KR Nerd', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace !important;
+  /* Keep this chain in sync with terminal-surface.tsx fontFamily. The symbol
+     fonts (Apple Symbols / Segoe UI Symbol / Noto Sans Symbols 2) catch code
+     points like ⊚ U+229A and ⬤ U+2B24 that Monoplex KR Nerd does not cover,
+     before iOS falls back to Apple Color Emoji. */
+  font-family: 'Monoplex KR Nerd', 'Apple Symbols', 'Segoe UI Symbol',
+    'Noto Sans Symbols 2', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', monospace !important;
   /* Force text presentation of dual-use code points (e.g. ⊙, ⊚, ▶) so iOS
      Safari does not promote them to full-color emoji glyphs in xterm output. */
   font-variant-emoji: text;

@@ -196,7 +196,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         fontSize: isMobileRef.current ? 13 : 16,
         lineHeight: 1,
         letterSpacing: 0,
-        fontFamily: '"Monoplex KR Nerd", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        // iOS/Safari 는 Monoplex 에 없는 글리프(예: ⊚ U+229A, ⬤ U+2B24)를
+        // Apple Color Emoji 로 합성한다. 텍스트 프리젠테이션 심볼 폰트를
+        // fallback 체인에 배치해 emoji 승격을 차단한다.
+        fontFamily: '"Monoplex KR Nerd", "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
         fontWeight: 400,
         fontWeightBold: 700,
         customGlyphs: true,
@@ -228,35 +231,54 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       });
       resizeObserver.observe(container);
 
-      // iOS / Android IME 처리: xterm 자체 textarea 는 composition 중 자모 단위로
-      // input 이벤트를 fire 하기 때문에 한글이 자모 분리된 채 PTY 로 흘러간다.
-      // composition 중에는 onData 를 buffer 하고 compositionend 의 e.data 만 한 번
-      // 전송한다. textarea 는 다음 입력을 위해 즉시 비운다.
+      // iOS / Android IME 처리: xterm 자체 textarea 는 composition 중에도 input
+      // 이벤트를 fire 하며, iOS Safari 에서는 compositionstart 가 input 이벤트보다
+      // 늦게 fire 되는 경우가 있어 '자모 분리 상태의 data' 가 PTY 로 흘러간다.
+      //
+      // 해결: helper textarea 의 input 이벤트를 CAPTURE phase 에서 가로채
+      // composing 동안의 emit 을 차단한다. xterm 의 자체 input handler 는 bubble
+      // phase 에서 동작하므로 stopImmediatePropagation 으로 확실히 차단한다.
+      // compositionend 의 event.data 만 한 번에 send.
       let composing = false;
+      let pendingCommit: string | null = null;
       const helperTextarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
 
       const handleCompositionStart = () => {
         composing = true;
       };
+
       const handleCompositionEnd = (event: CompositionEvent) => {
         composing = false;
-        if (event.data) {
-          onInputRef.current(event.data);
-        }
-        if (helperTextarea) {
-          // xterm 자체 핸들러가 textarea 값을 onData 로 emit 하기 전에 비워서
-          // 중복 send 와 잔류 자모 분리 입력을 차단.
-          queueMicrotask(() => {
+        pendingCommit = event.data ?? null;
+        // 현재 이벤트 루프가 끝난 뒤 textarea 를 비우고 commit 을 전송한다.
+        // 일부 iOS 빌드는 compositionend 이후에도 input 이벤트를 한 번 더 발송하는데,
+        // 그 이벤트를 capture 단계에서 흡수해 xterm onData 가 중복 전송하지 않도록 한다.
+        queueMicrotask(() => {
+          if (helperTextarea) {
             helperTextarea.value = '';
-          });
+          }
+          if (pendingCommit) {
+            onInputRef.current(pendingCommit);
+            pendingCommit = null;
+          }
+        });
+      };
+
+      const handleInputCapture = (event: Event) => {
+        // composition 중이거나 compositionend 직후 남은 tail input 은 무시.
+        if (composing || pendingCommit !== null) {
+          event.stopImmediatePropagation();
+          event.preventDefault?.();
         }
       };
 
       helperTextarea?.addEventListener('compositionstart', handleCompositionStart);
       helperTextarea?.addEventListener('compositionend', handleCompositionEnd);
+      helperTextarea?.addEventListener('input', handleInputCapture, true);
+      helperTextarea?.addEventListener('beforeinput', handleInputCapture, true);
 
       const inputDisposable = terminal.onData((data) => {
-        if (composing) {
+        if (composing || pendingCommit !== null) {
           return;
         }
         onInputRef.current(data);
@@ -266,6 +288,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
         helperTextarea?.removeEventListener('compositionstart', handleCompositionStart);
         helperTextarea?.removeEventListener('compositionend', handleCompositionEnd);
+        helperTextarea?.removeEventListener('input', handleInputCapture, true);
+        helperTextarea?.removeEventListener('beforeinput', handleInputCapture, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
