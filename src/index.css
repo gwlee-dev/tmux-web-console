@@ -19,6 +19,22 @@
   font-display: swap;
 }
 
+/* Noto Sans Symbols 2 covers U+23F0–U+23FF (⏺ ⏸ ⏹ ⏵ etc.), U+229A,
+   U+2B24 and other Miscellaneous Technical / Geometric symbols that
+   Monoplex KR Nerd does not ship. Registered as a fallback so those
+   code points render as text glyphs instead of Apple Color Emoji on iOS. */
+@font-face {
+  font-family: 'Noto Sans Symbols 2';
+  src: url('/fonts/noto-sans-symbols-2/NotoSansSymbols2-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  /* Only load glyphs that Monoplex lacks. Covers Misc Technical
+     (U+2300–U+23FF), Geometric Shapes extensions (U+2B00–U+2BFF),
+     and the specific isolated glyphs confirmed missing. */
+  unicode-range: U+229A, U+2300-23FF, U+2B00-2BFF;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
