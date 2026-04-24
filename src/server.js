@@ -4,6 +4,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { acceptWebSocketUpgrade, createTmuxPtyBridge, rejectWebSocketUpgrade } from './pty-websocket.js';
+import swaggerPlugin from './plugins/swagger.js';
 import tmux from './tmux.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -264,7 +265,7 @@ async function getPaneSnapshot(tmuxClient, paneId, historyLines) {
   return tmuxClient.capturePane(paneId, historyLines, { includeAnsi: true });
 }
 
-export function createApp({
+export async function createApp({
   tmuxClient = tmux,
   config: configOverrides = {},
   ptyBridgeFactory = createTmuxPtyBridge,
@@ -276,6 +277,15 @@ export function createApp({
 
   app.decorate('tmuxClient', tmuxClient);
   app.decorate('runtimeConfig', config);
+
+  // Register Swagger before any routes so `onRoute` collects every schema.
+  await app.register(swaggerPlugin);
+
+  // Swagger schema 는 문서 전용. Fastify/AJV 자동 body/params/query 검증을
+  // 비활성화하여 기존 validateRequiredString / validateNonEmptyRawString /
+  // validatePositiveIntegerField 가 단일 검증원(single source of truth)으로
+  // 남도록 한다. (plan Phase 4 결정: trim 동작 + 에러 응답 형식 보존.)
+  app.setValidatorCompiler(() => () => true);
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header('access-control-allow-origin', config.corsOrigin);
@@ -412,18 +422,71 @@ export function createApp({
     }
   });
 
-  app.get('/api/health', async () => ({
-    ok: true,
-    host: config.host,
-    port: config.port,
-    dev: config.dev,
-    authMode: 'credentials',
-    cookieSecure: config.cookieSecure,
-    paneHistoryLines: config.paneHistoryLines,
-    paneStreamIntervalMs: config.paneStreamIntervalMs,
-  }));
+  app.get(
+    '/api/health',
+    {
+      schema: {
+        tags: ['Health'],
+        summary: '서버 상태 점검',
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              host: { type: 'string' },
+              port: { type: 'integer' },
+              dev: { type: 'boolean' },
+              authMode: { type: 'string' },
+              cookieSecure: { type: 'boolean' },
+              paneHistoryLines: { type: 'integer' },
+              paneStreamIntervalMs: { type: 'integer' },
+            },
+          },
+        },
+      },
+    },
+    async () => ({
+      ok: true,
+      host: config.host,
+      port: config.port,
+      dev: config.dev,
+      authMode: 'credentials',
+      cookieSecure: config.cookieSecure,
+      paneHistoryLines: config.paneHistoryLines,
+      paneStreamIntervalMs: config.paneStreamIntervalMs,
+    }),
+  );
 
-  app.post('/api/login', async (request, reply) => {
+  app.post('/api/login', {
+    schema: {
+      tags: ['Auth'],
+      summary: '관리자 로그인',
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateRequiredString 이 단일 검증원
+        properties: {
+          username: { type: 'string' },
+          password: { type: 'string' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            user: {
+              type: 'object',
+              properties: { username: { type: 'string' } },
+            },
+          },
+        },
+        401: {
+          type: 'object',
+          properties: { error: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = await readJsonBody(request);
     const username = validateRequiredString(body.username, 'username');
     const password = validateRequiredString(body.password, 'password');
@@ -446,30 +509,108 @@ export function createApp({
     };
   });
 
-  app.post('/api/logout', async (_request, reply) => {
+  app.post('/api/logout', {
+    schema: {
+      tags: ['Auth'],
+      summary: '로그아웃',
+      response: {
+        200: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+        },
+      },
+    },
+  }, async (_request, reply) => {
     clearSessionCookie(reply, config);
     return { ok: true };
   });
 
-  app.get('/api/auth/me', async (request) => ({
+  app.get('/api/auth/me', {
+    schema: {
+      tags: ['Auth'],
+      summary: '현재 사용자 조회',
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            authenticated: { type: 'boolean' },
+            user: {
+              type: 'object',
+              properties: { username: { type: 'string' } },
+            },
+          },
+        },
+        401: {
+          type: 'object',
+          properties: { error: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request) => ({
     authenticated: true,
     user: {
       username: request.authenticatedUser,
     },
   }));
 
-  app.get('/api/tree', async () => {
+  app.get('/api/tree', {
+    schema: {
+      tags: ['Sessions'],
+      summary: '세션/윈도우/패널 트리 조회',
+      // fast-json-stringify 가 중첩 속성을 제거하지 않도록 response 는 문서용만 기술.
+    },
+  }, async () => {
     const sessions = await app.tmuxClient.getTree();
     return { sessions };
   });
 
-  app.get('/api/panes/:paneId', async (request) => {
+  app.get('/api/panes/:paneId', {
+    schema: {
+      tags: ['Panes'],
+      summary: '패널 스냅샷 조회',
+      params: {
+        type: 'object',
+        properties: { paneId: { type: 'string' } },
+      },
+      querystring: {
+        type: 'object',
+        properties: { lines: { type: 'integer' } },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            targetPane: { type: 'string' },
+            content: { type: 'string' },
+            lineCount: { type: 'integer' },
+            historyLines: { type: 'integer' },
+            capturedAt: { type: 'string' },
+            includesAnsi: { type: 'boolean' },
+          },
+        },
+      },
+    },
+  }, async (request) => {
     const paneId = request.params.paneId;
     const historyLines = parsePositiveInteger(request.query?.lines, config.paneHistoryLines);
     return getPaneSnapshot(app.tmuxClient, paneId, historyLines);
   });
 
-  app.post('/api/panes/:paneId/input', async (request) => {
+  app.post('/api/panes/:paneId/input', {
+    schema: {
+      tags: ['Panes'],
+      summary: '패널에 입력 전송',
+      params: {
+        type: 'object',
+        properties: { paneId: { type: 'string' } },
+      },
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateNonEmptyRawString 이 단일 검증원
+        properties: { input: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
     const paneId = request.params.paneId;
     const body = await readJsonBody(request);
     const input = validateNonEmptyRawString(body.input, 'input');
@@ -483,7 +624,24 @@ export function createApp({
     return app.tmuxClient.sendInput(paneId, input);
   });
 
-  app.post('/api/panes/:paneId/resize', async (request) => {
+  app.post('/api/panes/:paneId/resize', {
+    schema: {
+      tags: ['Panes'],
+      summary: '패널 크기 조정',
+      params: {
+        type: 'object',
+        properties: { paneId: { type: 'string' } },
+      },
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validatePositiveIntegerField 가 단일 검증원
+        properties: {
+          cols: { type: 'integer' },
+          rows: { type: 'integer' },
+        },
+      },
+    },
+  }, async (request) => {
     const paneId = request.params.paneId;
     const body = await readJsonBody(request);
     const cols = validatePositiveIntegerField(body.cols, 'cols');
@@ -492,7 +650,21 @@ export function createApp({
     return app.tmuxClient.resizePane(paneId, cols, rows);
   });
 
-  app.get('/api/panes/:paneId/stream', async (request, reply) => {
+  app.get('/api/panes/:paneId/stream', {
+    schema: {
+      tags: ['Panes'],
+      summary: '패널 스냅샷 SSE 스트림',
+      description: 'Server-Sent Events 로 pane snapshot 을 주기적으로 푸시합니다.',
+      params: {
+        type: 'object',
+        properties: { paneId: { type: 'string' } },
+      },
+      querystring: {
+        type: 'object',
+        properties: { lines: { type: 'integer' } },
+      },
+    },
+  }, async (request, reply) => {
     const paneId = request.params.paneId;
     const historyLines = parsePositiveInteger(request.query?.lines, config.paneHistoryLines);
 
@@ -548,12 +720,27 @@ export function createApp({
     await sendSnapshot(true);
   });
 
-  app.get('/api/sessions', async () => {
+  app.get('/api/sessions', {
+    schema: {
+      tags: ['Sessions'],
+      summary: '세션 목록 조회',
+    },
+  }, async () => {
     const sessions = await app.tmuxClient.listSessions();
     return { sessions };
   });
 
-  app.post('/api/sessions', async (request, reply) => {
+  app.post('/api/sessions', {
+    schema: {
+      tags: ['Sessions'],
+      summary: '세션 생성',
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateRequiredString 이 단일 검증원
+        properties: { name: { type: 'string' } },
+      },
+    },
+  }, async (request, reply) => {
     const body = await readJsonBody(request);
     const name = validateRequiredString(body.name, 'name');
     const result = await app.tmuxClient.createSession(name);
@@ -561,13 +748,36 @@ export function createApp({
     return result;
   });
 
-  app.delete('/api/sessions/:name', async (request) => {
+  app.delete('/api/sessions/:name', {
+    schema: {
+      tags: ['Sessions'],
+      summary: '세션 종료',
+      params: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
     const name = request.params.name;
     const result = await app.tmuxClient.killSession(name);
     return result;
   });
 
-  app.patch('/api/sessions/:name', async (request) => {
+  app.patch('/api/sessions/:name', {
+    schema: {
+      tags: ['Sessions'],
+      summary: '세션 이름 변경',
+      params: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+      },
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateRequiredString 이 단일 검증원
+        properties: { name: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
     const name = request.params.name;
     const body = await readJsonBody(request);
     const nextName = validateRequiredString(body.name, 'name');
@@ -575,7 +785,20 @@ export function createApp({
     return result;
   });
 
-  app.post('/api/windows', async (request, reply) => {
+  app.post('/api/windows', {
+    schema: {
+      tags: ['Windows'],
+      summary: '윈도우 생성',
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateRequiredString 이 단일 검증원
+        properties: {
+          sessionName: { type: 'string' },
+          name: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = await readJsonBody(request);
     const sessionName = validateRequiredString(body.sessionName, 'sessionName');
     const name = validateRequiredString(body.name, 'name');
@@ -584,13 +807,36 @@ export function createApp({
     return result;
   });
 
-  app.delete('/api/windows/:id', async (request) => {
-    const windowId = request.params.id;
+  app.delete('/api/windows/:id', {
+    schema: {
+      tags: ['Windows'],
+      summary: '윈도우 종료',
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
+    const windowId = validateRequiredString(request.params.id, 'id');
     const result = await app.tmuxClient.killWindow(windowId);
     return result;
   });
 
-  app.post('/api/commands', async (request) => {
+  app.post('/api/commands', {
+    schema: {
+      tags: ['Commands'],
+      summary: '명령 전송',
+      body: {
+        type: 'object',
+        // 'required' 의도적 생략 — validateRequiredString 이 단일 검증원
+        properties: {
+          targetPane: { type: 'string' },
+          command: { type: 'string' },
+          enter: { type: 'boolean' },
+        },
+      },
+    },
+  }, async (request) => {
     const body = await readJsonBody(request);
     const targetPane = validateRequiredString(body.targetPane, 'targetPane');
     const command = validateRequiredString(body.command, 'command');
@@ -623,7 +869,7 @@ export function createApp({
 }
 
 export async function startServer(options = {}) {
-  const { app, config, viteEnabled } = createApp(options);
+  const { app, config, viteEnabled } = await createApp(options);
   if (viteEnabled) {
     await app.register(FastifyVite, {
       root: projectRoot,
