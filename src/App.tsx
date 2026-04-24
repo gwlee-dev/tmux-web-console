@@ -23,8 +23,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
+import {
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+} from '@/components/ui/responsive-dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
@@ -1484,12 +1490,12 @@ function App() {
               </div>
             )}
           </SidebarInset>
-        <Dialog open={activeDialog === 'session'} onOpenChange={(open) => setActiveDialog(open ? 'session' : 'none')}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>세션 만들기</DialogTitle>
-              <DialogDescription>새 tmux 세션을 만듭니다.</DialogDescription>
-            </DialogHeader>
+        <ResponsiveDialog open={activeDialog === 'session'} onOpenChange={(open) => setActiveDialog(open ? 'session' : 'none')}>
+          <ResponsiveDialogContent>
+            <ResponsiveDialogHeader>
+              <ResponsiveDialogTitle>세션 만들기</ResponsiveDialogTitle>
+              <ResponsiveDialogDescription>새 tmux 세션을 만듭니다.</ResponsiveDialogDescription>
+            </ResponsiveDialogHeader>
             <Field data-invalid={Boolean(sessionNameError)}>
               <FieldLabel htmlFor="create-session-name">세션 이름</FieldLabel>
               <Input
@@ -1504,21 +1510,21 @@ function App() {
               />
               {sessionNameError ? <FieldError>{sessionNameError}</FieldError> : null}
             </Field>
-            <DialogFooter>
+            <ResponsiveDialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void createSession()} disabled={busyKey === 'create-session'}>
                 {busyKey === 'create-session' ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
                 만들기
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </ResponsiveDialogFooter>
+          </ResponsiveDialogContent>
+        </ResponsiveDialog>
 
-        <Dialog open={activeDialog === 'window'} onOpenChange={(open) => (open ? setActiveDialog('window') : closeDialog())}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Window 만들기</DialogTitle>
-            </DialogHeader>
+        <ResponsiveDialog open={activeDialog === 'window'} onOpenChange={(open) => (open ? setActiveDialog('window') : closeDialog())}>
+          <ResponsiveDialogContent>
+            <ResponsiveDialogHeader>
+              <ResponsiveDialogTitle>Window 만들기</ResponsiveDialogTitle>
+            </ResponsiveDialogHeader>
             <Field data-invalid={Boolean(windowNameError)}>
               <FieldLabel htmlFor="create-window-name">Window 이름</FieldLabel>
               <Input
@@ -1533,23 +1539,23 @@ function App() {
               />
               {windowNameError ? <FieldError>{windowNameError}</FieldError> : null}
             </Field>
-            <DialogFooter>
+            <ResponsiveDialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void createWindow()} disabled={busyKey === 'create-window'}>
                 {busyKey === 'create-window' ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
                 만들기
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </ResponsiveDialogFooter>
+          </ResponsiveDialogContent>
+        </ResponsiveDialog>
 
 
-        <Drawer open={mobileCommandOpen} onOpenChange={setMobileCommandOpen}>
-          <DrawerContent className="px-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
-            <DrawerHeader className="px-0">
-              <DrawerTitle>명령 입력</DrawerTitle>
-              <DrawerDescription>선택한 pane 으로 명령을 전송합니다.</DrawerDescription>
-            </DrawerHeader>
+        <ResponsiveDialog open={mobileCommandOpen} onOpenChange={setMobileCommandOpen}>
+          <ResponsiveDialogContent>
+            <ResponsiveDialogHeader>
+              <ResponsiveDialogTitle>명령 입력</ResponsiveDialogTitle>
+              <ResponsiveDialogDescription>선택한 pane 으로 명령을 전송합니다.</ResponsiveDialogDescription>
+            </ResponsiveDialogHeader>
             <form
               className="space-y-3"
               onSubmit={(event) => {
@@ -1569,26 +1575,24 @@ function App() {
                 spellCheck={false}
                 enterKeyHint="send"
               />
-              <DrawerFooter className="px-0">
+              <ResponsiveDialogFooter>
+                <Button variant="outline" type="button" onClick={() => setMobileCommandOpen(false)}>취소</Button>
                 <Button type="submit" disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
                   {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
                   보내기
                 </Button>
-                <DrawerClose asChild>
-                  <Button variant="outline" type="button">취소</Button>
-                </DrawerClose>
-              </DrawerFooter>
+              </ResponsiveDialogFooter>
             </form>
-          </DrawerContent>
-        </Drawer>
+          </ResponsiveDialogContent>
+        </ResponsiveDialog>
 
 
-        <Dialog open={activeDialog === 'rename-session'} onOpenChange={(open) => (open ? setActiveDialog('rename-session') : closeDialog())}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>세션 이름 변경</DialogTitle>
-              <DialogDescription>{renameSourceName ? `${renameSourceName} 세션 이름을 변경합니다.` : '세션 이름을 변경합니다.'}</DialogDescription>
-            </DialogHeader>
+        <ResponsiveDialog open={activeDialog === 'rename-session'} onOpenChange={(open) => (open ? setActiveDialog('rename-session') : closeDialog())}>
+          <ResponsiveDialogContent>
+            <ResponsiveDialogHeader>
+              <ResponsiveDialogTitle>세션 이름 변경</ResponsiveDialogTitle>
+              <ResponsiveDialogDescription>{renameSourceName ? `${renameSourceName} 세션 이름을 변경합니다.` : '세션 이름을 변경합니다.'}</ResponsiveDialogDescription>
+            </ResponsiveDialogHeader>
             <Field data-invalid={Boolean(renameError)}>
               <FieldLabel htmlFor="rename-session-name">세션 이름</FieldLabel>
               <Input
@@ -1603,15 +1607,15 @@ function App() {
               />
               {renameError ? <FieldError>{renameError}</FieldError> : null}
             </Field>
-            <DialogFooter>
+            <ResponsiveDialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void renameSession()} disabled={busyKey === `rename:${renameSourceName}`}>
                 {busyKey === `rename:${renameSourceName}` ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
                 변경
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </ResponsiveDialogFooter>
+          </ResponsiveDialogContent>
+        </ResponsiveDialog>
 
 
 
