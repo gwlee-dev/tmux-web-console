@@ -231,6 +231,65 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       });
       resizeObserver.observe(container);
 
+      // 터치 디바이스: 한 손가락 swipe 를 wheel 이벤트로 합성한다.
+      // tmux 의 mouse mode 가 켜진 경우 wheel 이벤트가 그대로 PTY 에 SGR
+      // mouse sequence 로 전송되어 scrollback / less / vim 모두에서 자연스럽게
+      // 동작한다. mouse mode 가 꺼져 있어도 xterm.js 의 viewport scroll 이
+      // wheel 이벤트를 받아 자체 스크롤백을 움직여준다.
+      const screen = container.querySelector<HTMLElement>('.xterm-screen');
+      const wheelTarget = screen ?? container;
+      let lastTouchY: number | null = null;
+      let lastTouchX: number | null = null;
+
+      const dispatchWheel = (deltaX: number, deltaY: number) => {
+        if (deltaX === 0 && deltaY === 0) return;
+        const event = new WheelEvent('wheel', {
+          deltaX,
+          deltaY,
+          deltaMode: 0, // pixel
+          bubbles: true,
+          cancelable: true,
+        });
+        wheelTarget.dispatchEvent(event);
+      };
+
+      const handleTouchStart = (event: TouchEvent) => {
+        if (event.touches.length !== 1) return;
+        lastTouchX = event.touches[0].clientX;
+        lastTouchY = event.touches[0].clientY;
+      };
+
+      const handleTouchMove = (event: TouchEvent) => {
+        if (event.touches.length !== 1 || lastTouchY === null || lastTouchX === null) {
+          return;
+        }
+        const t = event.touches[0];
+        const dx = lastTouchX - t.clientX;
+        const dy = lastTouchY - t.clientY;
+        lastTouchX = t.clientX;
+        lastTouchY = t.clientY;
+        if (Math.abs(dy) > 0 || Math.abs(dx) > 0) {
+          // 스크롤이 페이지 전체로 새는 것 방지
+          event.preventDefault();
+          dispatchWheel(dx, dy);
+        }
+      };
+
+      const handleTouchEnd = () => {
+        lastTouchX = null;
+        lastTouchY = null;
+      };
+
+      // touch-action: none 으로 브라우저 기본 pinch-zoom / pan 을 끄고 우리가
+      // 직접 합성한다.
+      const previousTouchAction = wheelTarget.style.touchAction;
+      wheelTarget.style.touchAction = 'none';
+
+      wheelTarget.addEventListener('touchstart', handleTouchStart, { passive: true });
+      wheelTarget.addEventListener('touchmove', handleTouchMove, { passive: false });
+      wheelTarget.addEventListener('touchend', handleTouchEnd, { passive: true });
+      wheelTarget.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
       // iOS soft-keyboard 한글 입력 처리.
       //
       // 진단 (public/ime-debug.html + iOS 18.7 Safari Web Inspector):
@@ -367,6 +426,11 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
           container.removeEventListener('keypress', handleIOSKeyEvent, true);
           container.removeEventListener('input', handleIOSInput, true);
         }
+        wheelTarget.removeEventListener('touchstart', handleTouchStart);
+        wheelTarget.removeEventListener('touchmove', handleTouchMove);
+        wheelTarget.removeEventListener('touchend', handleTouchEnd);
+        wheelTarget.removeEventListener('touchcancel', handleTouchEnd);
+        wheelTarget.style.touchAction = previousTouchAction;
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
