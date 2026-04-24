@@ -294,12 +294,12 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         }
       };
 
-      helperTextarea?.addEventListener(
-        'keydown',
-        handleSoftKeyboardKeydown,
-        true,
-      );
-      helperTextarea?.addEventListener('input', handleSoftKeyboardInput);
+      // helper textarea 에 직접 attach 하면 DOM target phase 에서 xterm 의
+      // 기존 listener 뒤로 줄을 서서 `stopImmediatePropagation` 이 소용없다
+      // (xterm 이 먼저 emit). 상위 container 의 CAPTURE phase 에 등록하면
+      // target phase 로 내려가기 전에 우리 listener 가 실행된다.
+      container.addEventListener('keydown', handleSoftKeyboardKeydown, true);
+      container.addEventListener('input', handleSoftKeyboardInput, true);
 
       const inputDisposable = terminal.onData((data) => {
         onInputRef.current(data);
@@ -307,12 +307,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
 
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
-        helperTextarea?.removeEventListener(
-          'keydown',
-          handleSoftKeyboardKeydown,
-          true,
-        );
-        helperTextarea?.removeEventListener('input', handleSoftKeyboardInput);
+        container.removeEventListener('keydown', handleSoftKeyboardKeydown, true);
+        container.removeEventListener('input', handleSoftKeyboardInput, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
