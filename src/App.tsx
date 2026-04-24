@@ -32,7 +32,6 @@ import { Toaster } from '@/components/ui/sonner';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 
-type StatusTone = 'default' | 'secondary' | 'destructive';
 type LiveConnectionState = 'idle' | 'connecting' | 'live' | 'error';
 type AppError = Error & { statusCode?: number };
 
@@ -81,16 +80,12 @@ type SessionNode = {
   id: string;
   name: string;
   attached: number;
+  created: number;
   windows: WindowNode[];
 };
 
 type TreeResponse = {
   sessions: SessionNode[];
-};
-
-type StatusState = {
-  tone: StatusTone;
-  message: string;
 };
 
 type SelectedPaneMeta = {
@@ -140,10 +135,9 @@ function summarizeError(error: unknown) {
   return '알 수 없는 오류가 발생했습니다.';
 }
 
-function reportError(error: unknown) {
+function reportError(error: unknown): void {
   const message = summarizeError(error)
   toast.error(message)
-  return message
 }
 
 function createAppError(message: string, statusCode?: number) {
@@ -285,7 +279,6 @@ function App() {
   const [viewportHeight, setViewportHeight] = useState(() => window.visualViewport?.height ?? window.innerHeight);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionNode[]>([]);
-  const [, setStatus] = useState<StatusState>({ tone: 'secondary', message: '서버 연결 상태를 확인하는 중입니다.' });
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('');
@@ -325,7 +318,7 @@ function App() {
   const pendingResizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef('');
   const terminalRef = useRef<TerminalSurfaceHandle | null>(null);
-  const mobileCommandInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileCommandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const ptySocketRef = useRef<WebSocket | null>(null);
   const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
@@ -457,7 +450,7 @@ function App() {
 
       setCurrentUser(authPayload.user.username);
       setSessions(treePayload.sessions);
-      setStatus({ tone: 'secondary', message: `${treePayload.sessions.length}개의 세션을 불러왔습니다.` });
+      toast.message(`${treePayload.sessions.length}개의 세션을 불러왔습니다.`);
     } catch (error) {
       const message = summarizeError(error);
       const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error ? error.statusCode : undefined;
@@ -467,9 +460,8 @@ function App() {
         setSessions([]);
         setSelectedPaneId(null);
         setPtyState('idle');
-        setStatus({ tone: 'secondary', message: '로그인이 필요합니다. 아이디와 비밀번호를 입력해주세요.' });
       } else {
-        setStatus({ tone: 'destructive', message });
+        toast.error(message);
       }
     } finally {
       setLoading(false);
@@ -610,9 +602,7 @@ function App() {
         return;
       }
 
-      if (!sendPtyMessage({ type: 'input', data })) {
-        setStatus({ tone: 'secondary', message: 'PTY 연결이 아직 준비되지 않았습니다.' });
-      }
+      sendPtyMessage({ type: 'input', data });
     },
     [selectedPaneId, sendPtyMessage],
   );
@@ -699,7 +689,7 @@ function App() {
             ready = true;
             setPtyState('live');
             terminalRef.current?.clear();
-            setStatus({ tone: 'default', message: `${payload.sessionName} 세션 PTY에 연결했습니다.` });
+            toast.success(`${payload.sessionName} 세션 PTY에 연결했습니다.`);
             resolveOnce(socket);
             return;
           }
@@ -711,7 +701,7 @@ function App() {
 
           if (payload.type === 'exit') {
             setPtyState('idle');
-            setStatus({ tone: 'secondary', message: 'PTY 세션이 종료되었습니다.' });
+            toast.message('PTY 세션이 종료되었습니다.');
             void refreshData();
             return;
           }
@@ -723,7 +713,6 @@ function App() {
             }
 
             setPtyState('error');
-            setStatus({ tone: 'destructive', message: payload.error });
             toast.error(payload.error);
           }
         };
@@ -735,7 +724,6 @@ function App() {
           }
 
           setPtyState('error');
-          setStatus({ tone: 'destructive', message: 'PTY WebSocket 연결 중 오류가 발생했습니다.' });
           toast.error('PTY WebSocket 연결 중 오류가 발생했습니다.');
         };
 
@@ -765,7 +753,7 @@ function App() {
       }
 
       setPtyState('error');
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     });
 
     return () => {
@@ -785,7 +773,10 @@ function App() {
   }, [selectedPaneId]);
 
   useEffect(() => {
-    terminalRef.current?.fit();
+    const timer = window.setTimeout(() => {
+      terminalRef.current?.fit();
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [viewportHeight]);
 
   useEffect(() => {
@@ -806,7 +797,7 @@ function App() {
   const sessionWindows = selectedSessionNode?.windows ?? [];
 
   const filteredSessions = useMemo(() => {
-    const orderedSessions = [...sessions].reverse()
+    const orderedSessions = [...sessions].sort((a, b) => b.created - a.created);
     const query = treeQuery.trim().toLowerCase();
     if (!query) {
       return orderedSessions;
@@ -828,7 +819,7 @@ function App() {
     const password = loginPassword;
 
     if (!username || !password) {
-      setStatus({ tone: 'destructive', message: '아이디와 비밀번호를 모두 입력해주세요.' });
+      toast.error('아이디와 비밀번호를 모두 입력해주세요.');
       return;
     }
 
@@ -840,11 +831,11 @@ function App() {
       });
       setCurrentUser(result.user.username);
       setLoginPassword('');
-      setStatus({ tone: 'default', message: `${result.user.username} 계정으로 로그인했습니다.` });
+      toast.success(`${result.user.username} 계정으로 로그인했습니다.`);
       navigate('/', true);
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -886,9 +877,8 @@ function App() {
       setCommandInput('');
       setSearchQuery('');
       navigate('/login', true);
-      setStatus({ tone: 'secondary', message: '로그아웃했습니다.' });
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -897,7 +887,7 @@ function App() {
   const createSession = async () => {
     const name = sessionName.trim();
     if (!name) {
-      setStatus({ tone: 'destructive', message: '세션 이름을 입력해주세요.' });
+      toast.error('세션 이름을 입력해주세요.');
       return;
     }
 
@@ -906,10 +896,10 @@ function App() {
       await apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ name }) });
       setSessionName('');
       closeDialog();
-      setStatus({ tone: 'default', message: `세션 ${name} 을(를) 만들었습니다.` });
+      toast.success(`세션 ${name} 을(를) 만들었습니다.`);
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -920,12 +910,12 @@ function App() {
     const normalizedWindow = windowName.trim();
 
     if (!normalizedSession) {
-      setStatus({ tone: 'destructive', message: '세션을 다시 선택해주세요.' });
+      toast.error('세션을 다시 선택해주세요.');
       return;
     }
 
     if (!normalizedWindow) {
-      setStatus({ tone: 'destructive', message: 'Window 이름을 입력해주세요.' });
+      toast.error('Window 이름을 입력해주세요.');
       return;
     }
 
@@ -938,10 +928,10 @@ function App() {
       setWindowSessionName('');
       setWindowName('');
       closeDialog();
-      setStatus({ tone: 'default', message: `${normalizedSession} 세션에 ${normalizedWindow} Window를 만들었습니다.` });
+      toast.success(`${normalizedSession} 세션에 ${normalizedWindow} Window를 만들었습니다.`);
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -971,7 +961,7 @@ function App() {
         }
       }
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -982,7 +972,7 @@ function App() {
     const nextName = renameSessionName.trim();
 
     if (!sourceName || !nextName) {
-      setStatus({ tone: 'destructive', message: '세션 이름을 입력해주세요.' });
+      toast.error('세션 이름을 입력해주세요.');
       return;
     }
 
@@ -993,13 +983,13 @@ function App() {
         body: JSON.stringify({ name: nextName }),
       });
       closeDialog();
-      setStatus({ tone: 'default', message: `${sourceName} 세션 이름을 ${nextName}(으)로 변경했습니다.` });
+      toast.success(`${sourceName} 세션 이름을 ${nextName}(으)로 변경했습니다.`);
       if (selectedSessionNode?.name === sourceName && selectedPaneId) {
         navigate(buildPanePath(nextName, selectedPaneId), true);
       }
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -1010,10 +1000,10 @@ function App() {
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
       setSessionKillDialogOpen(false);
-      setStatus({ tone: 'default', message: `${name} 세션을 종료했습니다.` });
+      toast.success(`${name} 세션을 종료했습니다.`);
       await refreshData();
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -1021,13 +1011,13 @@ function App() {
 
   const sendCommand = async () => {
     if (!selectedPaneId) {
-      setStatus({ tone: 'destructive', message: '왼쪽 목록에서 pane을 먼저 선택해주세요.' });
+      toast.error('왼쪽 목록에서 pane을 먼저 선택해주세요.');
       return;
     }
 
     const command = commandInput.trim();
     if (!command) {
-      setStatus({ tone: 'destructive', message: '보낼 명령어를 입력해주세요.' });
+      toast.error('보낼 명령어를 입력해주세요.');
       return;
     }
 
@@ -1038,9 +1028,10 @@ function App() {
         body: JSON.stringify({ targetPane: selectedPaneId, command, enter: true }),
       });
       setCommandInput('');
-      setStatus({ tone: 'default', message: `${selectedPaneId} pane에 명령어를 전송했습니다.` });
+      setMobileCommandOpen(false);
+      toast.success(`${selectedPaneId} pane에 명령어를 전송했습니다.`);
     } catch (error) {
-      setStatus({ tone: 'destructive', message: reportError(error) });
+      reportError(error);
     } finally {
       setBusyKey(null);
     }
@@ -1357,8 +1348,8 @@ function App() {
                   </div>
                 ) : null}
 
-                <div className={`flex min-h-0 w-full flex-1 flex-col md:rounded-[28px] md:border md:border-border/70 ${terminalShellClassName}`}>
-                  {sessionWindows.length > 1 ? (
+                <div data-pty-state={ptyState} className={`flex min-h-0 w-full flex-1 flex-col md:rounded-[28px] md:border md:border-border/70 ${terminalShellClassName}`}>
+                  {sessionWindows.length >= 1 ? (
                     <div className="px-0 pt-0 md:px-1 md:pt-1">
                       <div className={terminalStripClassName}>
                       <div className="w-full overflow-x-auto overflow-y-visible whitespace-nowrap">
@@ -1407,7 +1398,7 @@ function App() {
                     </div>
                   ) : null}
 
-                  <div className="min-h-0 flex-1 overflow-hidden px-0 pt-0 pb-0 md:px-4 md:pt-3 md:pb-3">
+                  <div className="min-h-0 flex-1 overflow-hidden px-0 pt-1 pb-0 md:px-4 md:pt-3 md:pb-3">
                     <TerminalSurface
                       ref={terminalRef}
                       className="min-h-0 rounded-none bg-transparent p-0"
@@ -1429,6 +1420,12 @@ function App() {
                       placeholder="명령 입력"
                       value={commandInput}
                       onChange={(event) => setCommandInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                          event.preventDefault();
+                          void sendCommand();
+                        }
+                      }}
                       autoComplete="off"
                       autoCorrect="off"
                       autoCapitalize="none"
@@ -1497,7 +1494,7 @@ function App() {
               }}
             >
               <Textarea
-                ref={mobileCommandInputRef as unknown as React.RefObject<HTMLTextAreaElement>}
+                ref={mobileCommandInputRef}
                 value={commandInput}
                 onChange={(event) => setCommandInput(event.target.value)}
                 placeholder="명령 입력"
@@ -1541,7 +1538,10 @@ function App() {
 
 
 
-        <AlertDialog open={windowKillDialogOpen} onOpenChange={setWindowKillDialogOpen}>
+        <AlertDialog open={windowKillDialogOpen} onOpenChange={(open) => {
+          setWindowKillDialogOpen(open);
+          if (!open) setWindowToKill(null);
+        }}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Window 종료</AlertDialogTitle>
@@ -1564,7 +1564,10 @@ function App() {
           </AlertDialogContent>
         </AlertDialog>
 
-        <AlertDialog open={sessionKillDialogOpen} onOpenChange={setSessionKillDialogOpen}>
+        <AlertDialog open={sessionKillDialogOpen} onOpenChange={(open) => {
+          setSessionKillDialogOpen(open);
+          if (!open) setSessionToKill(null);
+        }}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>세션 종료</AlertDialogTitle>
