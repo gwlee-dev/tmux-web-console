@@ -276,6 +276,17 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       );
 
       const handleIOSKeyEvent = (event: Event) => {
+        // iOS 는 textarea 가 비어있을 때 Backspace 키를 눌러도 `input` 이벤트
+        // 를 fire 하지 않는다 (Enter 는 insertLineBreak input 이벤트로 여전히
+        // 온다). 따라서 Backspace 만 keydown 에서 직접 PTY 로 보내 "기존 PTY
+        // 출력이 안 지워지는" 이슈를 해결하고, Enter 는 input handler 에 맡겨
+        // 중복 송신을 피한다.
+        if (event.type === 'keydown') {
+          const ke = event as KeyboardEvent;
+          if (ke.key === 'Backspace' && (helperTextarea?.value ?? '') === '') {
+            onInputRef.current('\x7f');
+          }
+        }
         event.stopImmediatePropagation();
       };
 
