@@ -161,8 +161,13 @@
 }
 
 
-.xterm {
+.xterm,
+.xterm .xterm-rows,
+.xterm .xterm-rows span {
   font-family: 'Monoplex KR Nerd', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace !important;
+  /* Force text presentation of dual-use code points (e.g. ⊙, ⊚, ▶) so iOS
+     Safari does not promote them to full-color emoji glyphs in xterm output. */
+  font-variant-emoji: text;
 }
 
 @media (max-width: 768px) {

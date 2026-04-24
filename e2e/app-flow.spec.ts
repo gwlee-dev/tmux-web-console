@@ -189,23 +189,25 @@ test.describe("mobile flow", () => {
     await expect(clipboardButton).toBeVisible({ timeout: 5000 });
     await clipboardButton.first().click();
 
-    // Scope to the Dialog content via data-slot (not role="dialog") so the
-    // Sheet can never be accidentally matched. dialog.tsx:60 emits
-    // data-slot="dialog-content"; sheet.tsx:60 emits data-slot="sheet-content".
-    const dialog = page
-      .locator('[data-slot="dialog-content"]')
+    // The mobile command surface is now a Drawer (vaul) — drawer.tsx emits
+    // data-slot="drawer-content", which is distinct from sheet-content and
+    // dialog-content so the Sidebar Sheet cannot match here.
+    const drawer = page
+      .locator('[data-slot="drawer-content"]')
       .filter({ hasText: "명령 입력" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+    await expect(drawer).toBeVisible({ timeout: 5000 });
 
-    // Type + submit — P1-1 auto-closes the dialog after sending. The Dialog
+    // Type + submit — P1-1 auto-closes the drawer after sending. The Drawer
     // tears down the Send button synchronously when the handler fires (the
     // setMobileCommandOpen(false) call and sendCommand both run), so
     // Playwright's stability check can race the DOM detachment. `force: true`
     // skips stability while the click event still fires; we then assert the
-    // dialog close as the true success signal.
-    await dialog.getByPlaceholder("명령 입력").fill("echo hello");
-    await dialog.getByRole("button", { name: /보내기/ }).click({ force: true });
+    // drawer close as the true success signal.
+    await drawer.getByPlaceholder("명령 입력").fill("echo hello");
+    const sendButton = drawer.getByRole("button", { name: /보내기/ });
+    await sendButton.scrollIntoViewIfNeeded();
+    await sendButton.click({ force: true });
 
-    await expect(dialog).not.toBeVisible({ timeout: 5000 });
+    await expect(drawer).not.toBeVisible({ timeout: 5000 });
   });
 });

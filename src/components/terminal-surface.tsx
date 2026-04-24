@@ -228,12 +228,44 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       });
       resizeObserver.observe(container);
 
+      // iOS / Android IME 처리: xterm 자체 textarea 는 composition 중 자모 단위로
+      // input 이벤트를 fire 하기 때문에 한글이 자모 분리된 채 PTY 로 흘러간다.
+      // composition 중에는 onData 를 buffer 하고 compositionend 의 e.data 만 한 번
+      // 전송한다. textarea 는 다음 입력을 위해 즉시 비운다.
+      let composing = false;
+      const helperTextarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+
+      const handleCompositionStart = () => {
+        composing = true;
+      };
+      const handleCompositionEnd = (event: CompositionEvent) => {
+        composing = false;
+        if (event.data) {
+          onInputRef.current(event.data);
+        }
+        if (helperTextarea) {
+          // xterm 자체 핸들러가 textarea 값을 onData 로 emit 하기 전에 비워서
+          // 중복 send 와 잔류 자모 분리 입력을 차단.
+          queueMicrotask(() => {
+            helperTextarea.value = '';
+          });
+        }
+      };
+
+      helperTextarea?.addEventListener('compositionstart', handleCompositionStart);
+      helperTextarea?.addEventListener('compositionend', handleCompositionEnd);
+
       const inputDisposable = terminal.onData((data) => {
+        if (composing) {
+          return;
+        }
         onInputRef.current(data);
       });
 
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
+        helperTextarea?.removeEventListener('compositionstart', handleCompositionStart);
+        helperTextarea?.removeEventListener('compositionend', handleCompositionEnd);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
