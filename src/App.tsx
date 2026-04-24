@@ -27,6 +27,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarInput, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarSeparator, SidebarTrigger } from '@/components/ui/sidebar';
 import { Toaster } from '@/components/ui/sonner';
@@ -298,6 +299,10 @@ function App() {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [commandInput, setCommandInput] = useState('');
+  const [loginErrors, setLoginErrors] = useState<{ username?: string; password?: string }>({});
+  const [sessionNameError, setSessionNameError] = useState<string | null>(null);
+  const [windowNameError, setWindowNameError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
   const [ptyState, setPtyState] = useState<LiveConnectionState>('idle');
   const [searchQuery, setSearchQuery] = useState('');
@@ -451,7 +456,6 @@ function App() {
 
       setCurrentUser(authPayload.user.username);
       setSessions(treePayload.sessions);
-      toast.message(`${treePayload.sessions.length}개의 세션을 불러왔습니다.`);
     } catch (error) {
       const message = summarizeError(error);
       const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error ? error.statusCode : undefined;
@@ -701,7 +705,6 @@ function App() {
 
           if (payload.type === 'exit') {
             setPtyState('idle');
-            toast.message('PTY 세션이 종료되었습니다.');
             void refreshData();
             return;
           }
@@ -829,10 +832,14 @@ function App() {
     const username = loginUsername.trim();
     const password = loginPassword;
 
-    if (!username || !password) {
-      toast.error('아이디와 비밀번호를 모두 입력해주세요.');
+    const nextErrors: { username?: string; password?: string } = {};
+    if (!username) nextErrors.username = '아이디를 입력해주세요.';
+    if (!password) nextErrors.password = '비밀번호를 입력해주세요.';
+    if (nextErrors.username || nextErrors.password) {
+      setLoginErrors(nextErrors);
       return;
     }
+    setLoginErrors({});
 
     setBusyKey('login');
     try {
@@ -842,7 +849,6 @@ function App() {
       });
       setCurrentUser(result.user.username);
       setLoginPassword('');
-      toast.success(`${result.user.username} 계정으로 로그인했습니다.`);
       navigate('/', true);
       await refreshData();
     } catch (error) {
@@ -867,6 +873,9 @@ function App() {
     setWindowName('');
     setRenameSourceName('');
     setRenameSessionName('');
+    setSessionNameError(null);
+    setWindowNameError(null);
+    setRenameError(null);
   };
 
   const openRenameSessionDialog = (name: string) => {
@@ -898,16 +907,16 @@ function App() {
   const createSession = async () => {
     const name = sessionName.trim();
     if (!name) {
-      toast.error('세션 이름을 입력해주세요.');
+      setSessionNameError('세션 이름을 입력해주세요.');
       return;
     }
+    setSessionNameError(null);
 
     setBusyKey('create-session');
     try {
       await apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ name }) });
       setSessionName('');
       closeDialog();
-      toast.success(`세션 ${name} 을(를) 만들었습니다.`);
       await refreshData();
     } catch (error) {
       reportError(error);
@@ -921,14 +930,15 @@ function App() {
     const normalizedWindow = windowName.trim();
 
     if (!normalizedSession) {
-      toast.error('세션을 다시 선택해주세요.');
+      setWindowNameError('세션을 다시 선택해주세요.');
       return;
     }
 
     if (!normalizedWindow) {
-      toast.error('Window 이름을 입력해주세요.');
+      setWindowNameError('Window 이름을 입력해주세요.');
       return;
     }
+    setWindowNameError(null);
 
     setBusyKey('create-window');
     try {
@@ -939,7 +949,6 @@ function App() {
       setWindowSessionName('');
       setWindowName('');
       closeDialog();
-      toast.success(`${normalizedSession} 세션에 ${normalizedWindow} Window를 만들었습니다.`);
       await refreshData();
     } catch (error) {
       reportError(error);
@@ -983,9 +992,10 @@ function App() {
     const nextName = renameSessionName.trim();
 
     if (!sourceName || !nextName) {
-      toast.error('세션 이름을 입력해주세요.');
+      setRenameError('세션 이름을 입력해주세요.');
       return;
     }
+    setRenameError(null);
 
     setBusyKey(`rename:${sourceName}`);
     try {
@@ -994,7 +1004,6 @@ function App() {
         body: JSON.stringify({ name: nextName }),
       });
       closeDialog();
-      toast.success(`${sourceName} 세션 이름을 ${nextName}(으)로 변경했습니다.`);
       if (selectedSessionNode?.name === sourceName && selectedPaneId) {
         navigate(buildPanePath(nextName, selectedPaneId), true);
       }
@@ -1011,7 +1020,6 @@ function App() {
     try {
       await apiRequest(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' });
       setSessionKillDialogOpen(false);
-      toast.success(`${name} 세션을 종료했습니다.`);
       await refreshData();
     } catch (error) {
       reportError(error);
@@ -1022,13 +1030,11 @@ function App() {
 
   const sendCommand = async () => {
     if (!selectedPaneId) {
-      toast.error('왼쪽 목록에서 pane을 먼저 선택해주세요.');
       return;
     }
 
     const command = commandInput.trim();
     if (!command) {
-      toast.error('보낼 명령어를 입력해주세요.');
       return;
     }
 
@@ -1040,7 +1046,6 @@ function App() {
       });
       setCommandInput('');
       setMobileCommandOpen(false);
-      toast.success(`${selectedPaneId} pane에 명령어를 전송했습니다.`);
     } catch (error) {
       reportError(error);
     } finally {
@@ -1049,17 +1054,17 @@ function App() {
   };
 
   const runSearch = (direction: 'next' | 'previous') => {
-    if (!searchQuery.trim()) {
-      toast.error('검색어를 입력해주세요.');
+    const query = searchQuery.trim();
+    if (!query) {
       return;
     }
 
     const found = direction === 'next'
-      ? terminalRef.current?.findNext(searchQuery.trim())
-      : terminalRef.current?.findPrevious(searchQuery.trim());
+      ? terminalRef.current?.findNext(query)
+      : terminalRef.current?.findPrevious(query);
 
     if (!found) {
-      toast.message(`터미널에서 "${searchQuery.trim()}" 검색 결과를 찾지 못했습니다.`);
+      toast.message(`터미널에서 "${query}" 검색 결과를 찾지 못했습니다.`);
     }
   };
 
@@ -1090,14 +1095,37 @@ function App() {
                       void login();
                     }}
                   >
-                    <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                      아이디
-                      <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" autoComplete="username" />
-                    </label>
-                    <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                      비밀번호
-                      <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" autoComplete="current-password" />
-                    </label>
+                    <Field data-invalid={Boolean(loginErrors.username)}>
+                      <FieldLabel htmlFor="login-username">아이디</FieldLabel>
+                      <Input
+                        id="login-username"
+                        value={loginUsername}
+                        onChange={(event) => {
+                          setLoginUsername(event.target.value);
+                          if (loginErrors.username) setLoginErrors((prev) => ({ ...prev, username: undefined }));
+                        }}
+                        placeholder="예: admin"
+                        autoComplete="username"
+                        aria-invalid={Boolean(loginErrors.username)}
+                      />
+                      {loginErrors.username ? <FieldError>{loginErrors.username}</FieldError> : null}
+                    </Field>
+                    <Field data-invalid={Boolean(loginErrors.password)}>
+                      <FieldLabel htmlFor="login-password">비밀번호</FieldLabel>
+                      <Input
+                        id="login-password"
+                        type="password"
+                        value={loginPassword}
+                        onChange={(event) => {
+                          setLoginPassword(event.target.value);
+                          if (loginErrors.password) setLoginErrors((prev) => ({ ...prev, password: undefined }));
+                        }}
+                        placeholder="비밀번호 입력"
+                        autoComplete="current-password"
+                        aria-invalid={Boolean(loginErrors.password)}
+                      />
+                      {loginErrors.password ? <FieldError>{loginErrors.password}</FieldError> : null}
+                    </Field>
                     <Button type="submit" disabled={busyKey === 'login'}>
                       {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
                       로그인
@@ -1462,9 +1490,20 @@ function App() {
               <DialogTitle>세션 만들기</DialogTitle>
               <DialogDescription>새 tmux 세션을 만듭니다.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-2">
-              <Input placeholder="예: dev-api" value={sessionName} onChange={(event) => setSessionName(event.target.value)} />
-            </div>
+            <Field data-invalid={Boolean(sessionNameError)}>
+              <FieldLabel htmlFor="create-session-name">세션 이름</FieldLabel>
+              <Input
+                id="create-session-name"
+                placeholder="예: dev-api"
+                value={sessionName}
+                onChange={(event) => {
+                  setSessionName(event.target.value);
+                  if (sessionNameError) setSessionNameError(null);
+                }}
+                aria-invalid={Boolean(sessionNameError)}
+              />
+              {sessionNameError ? <FieldError>{sessionNameError}</FieldError> : null}
+            </Field>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void createSession()} disabled={busyKey === 'create-session'}>
@@ -1480,9 +1519,20 @@ function App() {
             <DialogHeader>
               <DialogTitle>Window 만들기</DialogTitle>
             </DialogHeader>
-            <div className="space-y-3">
-              <Input placeholder="Window 이름" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
-            </div>
+            <Field data-invalid={Boolean(windowNameError)}>
+              <FieldLabel htmlFor="create-window-name">Window 이름</FieldLabel>
+              <Input
+                id="create-window-name"
+                placeholder="Window 이름"
+                value={windowName}
+                onChange={(event) => {
+                  setWindowName(event.target.value);
+                  if (windowNameError) setWindowNameError(null);
+                }}
+                aria-invalid={Boolean(windowNameError)}
+              />
+              {windowNameError ? <FieldError>{windowNameError}</FieldError> : null}
+            </Field>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void createWindow()} disabled={busyKey === 'create-window'}>
@@ -1539,9 +1589,20 @@ function App() {
               <DialogTitle>세션 이름 변경</DialogTitle>
               <DialogDescription>{renameSourceName ? `${renameSourceName} 세션 이름을 변경합니다.` : '세션 이름을 변경합니다.'}</DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
-              <Input placeholder="세션 이름" value={renameSessionName} onChange={(event) => setRenameSessionName(event.target.value)} />
-            </div>
+            <Field data-invalid={Boolean(renameError)}>
+              <FieldLabel htmlFor="rename-session-name">세션 이름</FieldLabel>
+              <Input
+                id="rename-session-name"
+                placeholder="세션 이름"
+                value={renameSessionName}
+                onChange={(event) => {
+                  setRenameSessionName(event.target.value);
+                  if (renameError) setRenameError(null);
+                }}
+                aria-invalid={Boolean(renameError)}
+              />
+              {renameError ? <FieldError>{renameError}</FieldError> : null}
+            </Field>
             <DialogFooter>
               <Button variant="outline" onClick={closeDialog}>취소</Button>
               <Button onClick={() => void renameSession()} disabled={busyKey === `rename:${renameSourceName}`}>
