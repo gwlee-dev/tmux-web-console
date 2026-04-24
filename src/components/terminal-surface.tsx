@@ -261,24 +261,30 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         '.xterm-helper-textarea',
       );
 
-      const debugIme = typeof window !== 'undefined' && window.localStorage?.getItem('debug_ime') === '1';
-      const imeLog = (msg: string, detail?: unknown) => {
-        if (!debugIme) return;
-        console.log(`[ime ${new Date().toISOString().slice(11, 23)}]`, msg, detail ?? '');
-      };
+      // iOS soft keyboard event 시퀀스: keydown(keyCode=0) → keypress(keyCode=유니코드) → input.
+      // keydown 만 차단해도 keypress 가 별도 listener 로 fire 되어 xterm 이 emit.
+      // keydown 차단 시 flag 를 세워 직후의 keypress 도 함께 차단한다.
+      // 외부 BT 키보드는 keydown 에서 실제 keyCode 를 내므로 flag 가 서지 않아 영향 없음.
+      let blockSoftKeyboardChain = false;
 
       const handleSoftKeyboardKeydown = (event: Event) => {
         const ke = event as KeyboardEvent;
-        imeLog(`keydown key=${ke.key} keyCode=${ke.keyCode} target=${(ke.target as Element | null)?.tagName}`);
         if (ke.keyCode === 0) {
+          blockSoftKeyboardChain = true;
           ke.stopImmediatePropagation();
-          imeLog('keydown BLOCKED');
+        } else {
+          blockSoftKeyboardChain = false;
+        }
+      };
+
+      const handleSoftKeyboardKeypress = (event: Event) => {
+        if (blockSoftKeyboardChain) {
+          event.stopImmediatePropagation();
         }
       };
 
       const handleSoftKeyboardInput = (event: Event) => {
         const ie = event as InputEvent;
-        imeLog(`input type=${ie.inputType} data=${JSON.stringify(ie.data)}`);
         let handled = true;
         switch (ie.inputType) {
           case 'insertText':
@@ -318,6 +324,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       // (xterm 이 먼저 emit). 상위 container 의 CAPTURE phase 에 등록하면
       // target phase 로 내려가기 전에 우리 listener 가 실행된다.
       container.addEventListener('keydown', handleSoftKeyboardKeydown, true);
+      container.addEventListener('keypress', handleSoftKeyboardKeypress, true);
       container.addEventListener('input', handleSoftKeyboardInput, true);
 
       const inputDisposable = terminal.onData((data) => {
@@ -327,6 +334,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
         container.removeEventListener('keydown', handleSoftKeyboardKeydown, true);
+        container.removeEventListener('keypress', handleSoftKeyboardKeypress, true);
         container.removeEventListener('input', handleSoftKeyboardInput, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
