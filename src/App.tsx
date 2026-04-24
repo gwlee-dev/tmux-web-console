@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
@@ -689,7 +690,6 @@ function App() {
             ready = true;
             setPtyState('live');
             terminalRef.current?.clear();
-            toast.success(`${payload.sessionName} 세션 PTY에 연결했습니다.`);
             resolveOnce(socket);
             return;
           }
@@ -784,6 +784,17 @@ function App() {
       window.setTimeout(() => mobileCommandInputRef.current?.focus(), 0)
     }
   }, [mobileCommandOpen]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!query) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      terminalRef.current?.findNext(query);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
   const selectedSessionNode = useMemo(() => {
     const sessionName = selectedPaneMeta?.sessionName ?? (route.kind === 'pane' ? route.sessionName : null);
@@ -1049,10 +1060,7 @@ function App() {
 
     if (!found) {
       toast.message(`터미널에서 "${searchQuery.trim()}" 검색 결과를 찾지 못했습니다.`);
-      return;
     }
-
-    toast.success(`터미널에서 "${searchQuery.trim()}" 검색 결과로 이동했습니다.`);
   };
 
   const liveVariant = ptyState === 'error' ? 'destructive' : ptyState === 'live' ? 'default' : 'secondary';
@@ -1074,19 +1082,27 @@ function App() {
                   <CardTitle className="text-3xl">tmux 웹 콘솔 로그인</CardTitle>
                   <CardDescription>아이디와 비밀번호로 로그인하세요.</CardDescription>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-4">
-                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                    아이디
-                    <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" />
-                  </label>
-                  <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                    비밀번호
-                    <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" />
-                  </label>
-                  <Button onClick={() => void login()} disabled={busyKey === 'login'}>
-                    {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                    로그인
-                  </Button>
+                <CardContent>
+                  <form
+                    className="flex flex-col gap-4"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void login();
+                    }}
+                  >
+                    <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                      아이디
+                      <Input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="예: admin" autoComplete="username" />
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                      비밀번호
+                      <Input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="비밀번호 입력" autoComplete="current-password" />
+                    </label>
+                    <Button type="submit" disabled={busyKey === 'login'}>
+                      {busyKey === 'login' ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                      로그인
+                    </Button>
+                  </form>
                 </CardContent>
               </Card>
             )}
@@ -1349,7 +1365,7 @@ function App() {
                 ) : null}
 
                 <div data-pty-state={ptyState} className={`flex min-h-0 w-full flex-1 flex-col md:rounded-[28px] md:border md:border-border/70 ${terminalShellClassName}`}>
-                  {sessionWindows.length >= 1 ? (
+                  {sessionWindows.length > 1 ? (
                     <div className="px-0 pt-0 md:px-1 md:pt-1">
                       <div className={terminalStripClassName}>
                       <div className="w-full overflow-x-auto overflow-y-visible whitespace-nowrap">
@@ -1478,14 +1494,12 @@ function App() {
         </Dialog>
 
 
-        <Dialog open={mobileCommandOpen} onOpenChange={setMobileCommandOpen}>
-          <DialogContent
-            onPointerDownOutside={(event) => event.preventDefault()}
-            onInteractOutside={(event) => event.preventDefault()}
-          >
-            <DialogHeader>
-              <DialogTitle>명령 입력</DialogTitle>
-            </DialogHeader>
+        <Drawer open={mobileCommandOpen} onOpenChange={setMobileCommandOpen}>
+          <DrawerContent className="px-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
+            <DrawerHeader className="px-0">
+              <DrawerTitle>명령 입력</DrawerTitle>
+              <DrawerDescription>선택한 pane 으로 명령을 전송합니다.</DrawerDescription>
+            </DrawerHeader>
             <form
               className="space-y-3"
               onSubmit={(event) => {
@@ -1505,16 +1519,18 @@ function App() {
                 spellCheck={false}
                 enterKeyHint="send"
               />
-              <DialogFooter>
-                <Button variant="outline" type="button" onClick={() => setMobileCommandOpen(false)}>취소</Button>
+              <DrawerFooter className="px-0">
                 <Button type="submit" disabled={busyKey === `command:${selectedPaneId ?? 'none'}`}>
                   {busyKey === `command:${selectedPaneId ?? 'none'}` ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
                   보내기
                 </Button>
-              </DialogFooter>
+                <DrawerClose asChild>
+                  <Button variant="outline" type="button">취소</Button>
+                </DrawerClose>
+              </DrawerFooter>
             </form>
-          </DialogContent>
-        </Dialog>
+          </DrawerContent>
+        </Drawer>
 
 
         <Dialog open={activeDialog === 'rename-session'} onOpenChange={(open) => (open ? setActiveDialog('rename-session') : closeDialog())}>
