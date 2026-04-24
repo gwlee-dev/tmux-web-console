@@ -261,15 +261,25 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         '.xterm-helper-textarea',
       );
 
+      const debugIme = typeof window !== 'undefined' && window.localStorage?.getItem('debug_ime') === '1';
+      const imeLog = (msg: string, detail?: unknown) => {
+        if (!debugIme) return;
+        console.log(`[ime ${new Date().toISOString().slice(11, 23)}]`, msg, detail ?? '');
+      };
+
       const handleSoftKeyboardKeydown = (event: Event) => {
         const ke = event as KeyboardEvent;
+        imeLog(`keydown key=${ke.key} keyCode=${ke.keyCode} target=${(ke.target as Element | null)?.tagName}`);
         if (ke.keyCode === 0) {
           ke.stopImmediatePropagation();
+          imeLog('keydown BLOCKED');
         }
       };
 
       const handleSoftKeyboardInput = (event: Event) => {
         const ie = event as InputEvent;
+        imeLog(`input type=${ie.inputType} data=${JSON.stringify(ie.data)}`);
+        let handled = true;
         switch (ie.inputType) {
           case 'insertText':
             if (ie.data) {
@@ -291,6 +301,15 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
           case 'deleteContentForward':
             onInputRef.current('\x1b[3~');
             break;
+          default:
+            handled = false;
+        }
+        if (handled) {
+          // xterm 의 _inputEvent 가 동일한 event 를 capture phase 로 구독
+          // (CoreBrowserTerminal.ts:384) 하고 insertText 의 data 를 그대로
+          // triggerDataEvent 로 emit 하기 때문에, container capture 단계에서
+          // 전파를 차단해 중복 송신을 막는다.
+          ie.stopImmediatePropagation();
         }
       };
 
