@@ -231,21 +231,88 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       });
       resizeObserver.observe(container);
 
-      // xterm.js 가 내부적으로 CompositionHelper 로 IME 를 처리한다.
-      // compositionstart 에서 textarea.value.length 를 start pos 로 기록하고
-      // compositionend 의 setTimeout(0) 에서 textarea.value.substring(start) 를
-      // triggerDataEvent 로 한 번에 전송한다. 즉 xterm 기본 동작에 맡기면
-      // 데스크톱과 iOS 모두 조합된 한글이 한 번에 PTY 로 간다.
+      // iOS soft-keyboard 한글 입력 처리.
       //
-      // 이전 라운드에서 직접 입힌 composition flag / capture listener 는 iOS
-      // 에서 오히려 xterm 의 composition 위치 추적을 방해해 자모 분리를 유발
-      // 했으므로 전부 제거하고 xterm 기본 경로로 복귀한다.
+      // 진단 (public/ime-debug.html + iOS 18.7 Safari Web Inspector):
+      //   - iOS 한글 키보드는 `compositionstart` / `compositionupdate` /
+      //     `compositionend` 를 **전혀 발생시키지 않는다**.
+      //   - `keydown` 은 키 하나당 fire 되며 `key` 에 **raw jamo** (ㅇ/ㅏ/ㄴ…),
+      //     `keyCode` 는 항상 `0`.
+      //   - IME 조합은 OS 레벨에서 수행되어 `beforeinput` + `input` 이벤트로
+      //     textarea 에 반영됨:
+      //         ㅇ:  insertText data=ㅇ     val=ㅇ
+      //         ㅏ:  deleteContentBackward  → insertText data=아   val=아
+      //         ㄴ:  deleteContentBackward  → insertText data=안   val=안
+      //         … (다음 글자부터 새 음절)
+      //
+      // xterm.js 는 `keydown` 으로 emit 하므로 iOS soft keyboard 에서는
+      // 조합 전 jamo 가 PTY 로 바로 흘러가 "ㅇㅏㄴ" 처럼 보인다. 또한
+      // composition event 가 안 뜨니 CompositionHelper 경로도 타지 않는다.
+      //
+      // 해결:
+      //   1. helper textarea 에서 `keydown.keyCode === 0` 이벤트를 capture
+      //      phase 에서 `stopImmediatePropagation` → xterm 의 emit 경로 차단.
+      //      외부 BT 키보드는 실제 keyCode 를 보고하므로 이 차단에 영향받지 않음.
+      //   2. `input` 이벤트를 직접 구독해 inputType 별로 PTY 에 emit.
+      //
+      // macOS/Linux 데스크톱은 keyCode !== 0 이고 compositionstart/end 가 정상
+      // 동작하므로 xterm 기본 경로 그대로 사용.
+      const helperTextarea = container.querySelector<HTMLTextAreaElement>(
+        '.xterm-helper-textarea',
+      );
+
+      const handleSoftKeyboardKeydown = (event: Event) => {
+        const ke = event as KeyboardEvent;
+        if (ke.keyCode === 0) {
+          ke.stopImmediatePropagation();
+        }
+      };
+
+      const handleSoftKeyboardInput = (event: Event) => {
+        const ie = event as InputEvent;
+        switch (ie.inputType) {
+          case 'insertText':
+            if (ie.data) {
+              onInputRef.current(ie.data);
+            }
+            break;
+          case 'deleteContentBackward':
+            onInputRef.current('\x7f');
+            break;
+          case 'insertLineBreak':
+          case 'insertParagraph':
+            onInputRef.current('\r');
+            // 엔터 후 textarea 를 비워 iOS IME 가 다음 composition 을
+            // clean state 에서 시작하도록 한다.
+            queueMicrotask(() => {
+              if (helperTextarea) helperTextarea.value = '';
+            });
+            break;
+          case 'deleteContentForward':
+            onInputRef.current('\x1b[3~');
+            break;
+        }
+      };
+
+      helperTextarea?.addEventListener(
+        'keydown',
+        handleSoftKeyboardKeydown,
+        true,
+      );
+      helperTextarea?.addEventListener('input', handleSoftKeyboardInput);
+
       const inputDisposable = terminal.onData((data) => {
         onInputRef.current(data);
       });
 
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
+        helperTextarea?.removeEventListener(
+          'keydown',
+          handleSoftKeyboardKeydown,
+          true,
+        );
+        helperTextarea?.removeEventListener('input', handleSoftKeyboardInput);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();

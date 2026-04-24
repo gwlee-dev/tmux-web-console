@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>IME Debug</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 1rem; display: flex; flex-direction: column; gap: 1rem; height: 100svh; }
+    h1 { font-size: 1rem; margin: 0; }
+    section { border: 1px solid #8884; border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    label { font-size: 0.8rem; color: #6668; }
+    textarea { font-size: 1rem; padding: 0.5rem; border: 1px solid #8884; border-radius: 4px; width: 100%; font-family: ui-monospace, monospace; }
+    .xterm-like {
+      /* Mimic xterm-helper-textarea: offscreen 1x1 opacity:0 */
+      position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: auto;
+      z-index: 1;
+    }
+    .xterm-surface {
+      position: relative; height: 6rem; border: 1px dashed #8888; border-radius: 4px;
+      background: #0003;
+      display: flex; align-items: center; justify-content: center;
+      color: #888;
+    }
+    pre { margin: 0; font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; max-height: 40svh; overflow: auto; background: #0002; padding: 0.5rem; border-radius: 4px; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    button { padding: 0.4rem 0.8rem; font-size: 0.85rem; border: 1px solid #8886; border-radius: 4px; background: #fff2; }
+  </style>
+</head>
+<body>
+  <h1>IME Debug · 한글 IME 이벤트 점검</h1>
+
+  <section>
+    <label>A. 일반 textarea (baseline)</label>
+    <textarea id="normal" rows="2" placeholder="여기 한글 입력"></textarea>
+  </section>
+
+  <section>
+    <label>B. xterm helper 와 동일한 스타일 (opacity 0 · 1×1)</label>
+    <div class="xterm-surface">
+      터미널 surface 흉내 — 탭 해서 숨은 textarea 로 포커스 이동
+      <textarea id="xtermlike" class="xterm-like" aria-label="hidden helper"></textarea>
+    </div>
+    <div class="row">
+      <button id="focus-xterm">hidden textarea focus</button>
+      <button id="clear-log">log clear</button>
+    </div>
+  </section>
+
+  <section>
+    <label>이벤트 로그 (최신 아래)</label>
+    <pre id="log"></pre>
+  </section>
+
+  <script>
+    const log = document.getElementById('log');
+    const append = (msg, payload) => {
+      const t = new Date().toISOString().slice(11, 23);
+      log.textContent += `[${t}] ${msg}\n`;
+      log.scrollTop = log.scrollHeight;
+      if (payload === undefined) {
+        console.log(`[ime-debug ${t}]`, msg);
+      } else {
+        console.log(`[ime-debug ${t}]`, msg, payload);
+      }
+    };
+
+    const events = [
+      'compositionstart',
+      'compositionupdate',
+      'compositionend',
+      'beforeinput',
+      'input',
+      'keydown',
+      'keyup',
+      'focus',
+      'blur',
+    ];
+
+    function instrument(el, name) {
+      events.forEach((evt) => {
+        el.addEventListener(evt, (e) => {
+          const details = {
+            evt,
+            data: 'data' in e ? e.data : undefined,
+            inputType: e.inputType,
+            isComposing: e.isComposing,
+            key: e.key,
+            keyCode: e.keyCode,
+            val: el.value,
+          };
+          const filtered = Object.fromEntries(
+            Object.entries(details).filter(([, v]) => v !== undefined),
+          );
+          append(`${name} ${JSON.stringify(filtered)}`, { raw: e, target: el });
+        });
+      });
+    }
+
+    instrument(document.getElementById('normal'), 'normal');
+    instrument(document.getElementById('xtermlike'), 'xterm ');
+
+    document.getElementById('focus-xterm').addEventListener('click', () => {
+      document.getElementById('xtermlike').focus();
+      append('—— xterm textarea focused ——');
+    });
+    document.getElementById('clear-log').addEventListener('click', () => {
+      log.textContent = '';
+    });
+
+    append('ready · 한글 키보드로 "안녕" 등 입력해보세요.');
+    append(`UA: ${navigator.userAgent}`);
+  </script>
+</body>
+</html>
