@@ -231,65 +231,21 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       });
       resizeObserver.observe(container);
 
-      // iOS / Android IME 처리: xterm 자체 textarea 는 composition 중에도 input
-      // 이벤트를 fire 하며, iOS Safari 에서는 compositionstart 가 input 이벤트보다
-      // 늦게 fire 되는 경우가 있어 '자모 분리 상태의 data' 가 PTY 로 흘러간다.
+      // xterm.js 가 내부적으로 CompositionHelper 로 IME 를 처리한다.
+      // compositionstart 에서 textarea.value.length 를 start pos 로 기록하고
+      // compositionend 의 setTimeout(0) 에서 textarea.value.substring(start) 를
+      // triggerDataEvent 로 한 번에 전송한다. 즉 xterm 기본 동작에 맡기면
+      // 데스크톱과 iOS 모두 조합된 한글이 한 번에 PTY 로 간다.
       //
-      // 해결: helper textarea 의 input 이벤트를 CAPTURE phase 에서 가로채
-      // composing 동안의 emit 을 차단한다. xterm 의 자체 input handler 는 bubble
-      // phase 에서 동작하므로 stopImmediatePropagation 으로 확실히 차단한다.
-      // compositionend 의 event.data 만 한 번에 send.
-      let composing = false;
-      let pendingCommit: string | null = null;
-      const helperTextarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
-
-      const handleCompositionStart = () => {
-        composing = true;
-      };
-
-      const handleCompositionEnd = (event: CompositionEvent) => {
-        composing = false;
-        pendingCommit = event.data ?? null;
-        // 현재 이벤트 루프가 끝난 뒤 textarea 를 비우고 commit 을 전송한다.
-        // 일부 iOS 빌드는 compositionend 이후에도 input 이벤트를 한 번 더 발송하는데,
-        // 그 이벤트를 capture 단계에서 흡수해 xterm onData 가 중복 전송하지 않도록 한다.
-        queueMicrotask(() => {
-          if (helperTextarea) {
-            helperTextarea.value = '';
-          }
-          if (pendingCommit) {
-            onInputRef.current(pendingCommit);
-            pendingCommit = null;
-          }
-        });
-      };
-
-      const handleInputCapture = (event: Event) => {
-        // composition 중이거나 compositionend 직후 남은 tail input 은 무시.
-        if (composing || pendingCommit !== null) {
-          event.stopImmediatePropagation();
-          event.preventDefault?.();
-        }
-      };
-
-      helperTextarea?.addEventListener('compositionstart', handleCompositionStart);
-      helperTextarea?.addEventListener('compositionend', handleCompositionEnd);
-      helperTextarea?.addEventListener('input', handleInputCapture, true);
-      helperTextarea?.addEventListener('beforeinput', handleInputCapture, true);
-
+      // 이전 라운드에서 직접 입힌 composition flag / capture listener 는 iOS
+      // 에서 오히려 xterm 의 composition 위치 추적을 방해해 자모 분리를 유발
+      // 했으므로 전부 제거하고 xterm 기본 경로로 복귀한다.
       const inputDisposable = terminal.onData((data) => {
-        if (composing || pendingCommit !== null) {
-          return;
-        }
         onInputRef.current(data);
       });
 
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
-        helperTextarea?.removeEventListener('compositionstart', handleCompositionStart);
-        helperTextarea?.removeEventListener('compositionend', handleCompositionEnd);
-        helperTextarea?.removeEventListener('input', handleInputCapture, true);
-        helperTextarea?.removeEventListener('beforeinput', handleInputCapture, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
