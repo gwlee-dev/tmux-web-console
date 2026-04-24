@@ -420,7 +420,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@fastify/deepmerge@npm:^3.2.1":
+"@fastify/busboy@npm:^3.0.0":
+  version: 3.2.0
+  resolution: "@fastify/busboy@npm:3.2.0"
+  checksum: 10c0/3e4fb00a27e3149d1c68de8ff14007d2bbcbbc171a9d050d0a8772e836727329d4d3f130995ebaa19cf537d5d2f5ce2a88000366e6192e751457bfcc2125f351
+  languageName: node
+  linkType: hard
+
+"@fastify/deepmerge@npm:^3.0.0, @fastify/deepmerge@npm:^3.2.1":
   version: 3.2.1
   resolution: "@fastify/deepmerge@npm:3.2.1"
   checksum: 10c0/2c0f8b627537834822ec761842e3a57965d3fb59e011ac5f2215b618ce34698e277bcbe4f586b09e4f03347391f292cfef9dccb6bda7b019ea9420d8767ade49
@@ -469,6 +476,19 @@ __metadata:
     path-to-regexp: "npm:^8.1.0"
     reusify: "npm:^1.0.4"
   checksum: 10c0/b1dc6d12a961fb6f44476fca0d89d74e8762c21f076af4da5ac23cc28741630a870d0f3cc29bbcdaa6a8f3054a48ff17d5dae9fa867bfcb5c56eb71cdaccf2c6
+  languageName: node
+  linkType: hard
+
+"@fastify/multipart@npm:^10.0.0":
+  version: 10.0.0
+  resolution: "@fastify/multipart@npm:10.0.0"
+  dependencies:
+    "@fastify/busboy": "npm:^3.0.0"
+    "@fastify/deepmerge": "npm:^3.0.0"
+    "@fastify/error": "npm:^4.0.0"
+    fastify-plugin: "npm:^5.0.0"
+    secure-json-parse: "npm:^4.0.0"
+  checksum: 10c0/49e09135599a59aab761b71f65ab5f9ad63c3ea28ede04389c308dea1149b1fd7779693230f5bc0ffc9063c42484e99a2d1d38c0fd73b074c9ed3216db12e9da
   languageName: node
   linkType: hard
 
@@ -6337,6 +6357,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "tmux-web-console@workspace:."
   dependencies:
+    "@fastify/multipart": "npm:^10.0.0"
     "@fastify/static": "npm:^9.1.2"
     "@fastify/swagger": "npm:^9.7.0"
     "@fastify/swagger-ui": "npm:^5.2.6"

@@ -1,11 +1,60 @@
 import Fastify from 'fastify';
 import FastifyVite from '@fastify/vite';
+import fastifyMultipart from '@fastify/multipart';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { acceptWebSocketUpgrade, createTmuxPtyBridge, rejectWebSocketUpgrade } from './pty-websocket.js';
 import swaggerPlugin from './plugins/swagger.js';
 import tmux from './tmux.js';
+
+const UPLOAD_ROOT_DIRNAME = 'tmux-web-console-uploads';
+const UPLOAD_FILE_LIMIT_BYTES = 20 * 1024 * 1024;    // 20 MB per file
+const UPLOAD_TOTAL_LIMIT_BYTES = 50 * 1024 * 1024;   // 50 MB per request
+const UPLOAD_TTL_MS = 60 * 60 * 1000;                // 1 hour
+const SAFE_FILENAME_RE = /[^A-Za-z0-9._-]+/g;
+
+function sanitizeUploadFilename(raw) {
+  const base = path.basename(raw || 'upload');
+  const cleaned = base
+    .replace(SAFE_FILENAME_RE, '_')
+    .replace(/\.{2,}/g, '_')
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '')
+    .slice(0, 120);
+  return cleaned || 'upload';
+}
+
+function uploadUserDir(username) {
+  const safe = username.replace(SAFE_FILENAME_RE, '_').slice(0, 64) || 'user';
+  return path.join(os.tmpdir(), UPLOAD_ROOT_DIRNAME, safe);
+}
+
+async function cleanupStaleUploads(dir, ttlMs = UPLOAD_TTL_MS) {
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+
+  const cutoff = Date.now() - ttlMs;
+  await Promise.all(
+    entries.map(async (name) => {
+      const filePath = path.join(dir, name);
+      try {
+        const info = await stat(filePath);
+        if (info.mtimeMs < cutoff) {
+          await rm(filePath, { force: true, recursive: false });
+        }
+      } catch {
+        /* ignore */
+      }
+    }),
+  );
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -280,6 +329,14 @@ export async function createApp({
 
   // Register Swagger before any routes so `onRoute` collects every schema.
   await app.register(swaggerPlugin);
+
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: UPLOAD_FILE_LIMIT_BYTES,
+      files: 20,
+      fields: 0,
+    },
+  });
 
   // Swagger schema 는 문서 전용. Fastify/AJV 자동 body/params/query 검증을
   // 비활성화하여 기존 validateRequiredString / validateNonEmptyRawString /
@@ -850,6 +907,92 @@ export async function createApp({
 
     const result = await app.tmuxClient.sendCommand(targetPane, command, enter);
     return result;
+  });
+
+  app.post('/api/uploads', {
+    schema: {
+      tags: ['Uploads'],
+      summary: '파일 업로드 (tmp 경로 반환)',
+      description:
+        'multipart/form-data 로 파일을 받아 OS tmp 디렉토리에 저장하고, 터미널에서 참조 가능한 절대 경로 배열을 반환한다. 사용자 이름 단위 하위 디렉토리를 쓰며 1시간이 지난 파일은 요청 시 정리된다.',
+      consumes: ['multipart/form-data'],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!request.isMultipart()) {
+      const error = new Error('multipart/form-data required');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const username = request.authenticatedUser;
+    const userDir = uploadUserDir(username);
+    await mkdir(userDir, { recursive: true });
+    // lazy TTL cleanup of this user's directory.
+    await cleanupStaleUploads(userDir);
+
+    const paths = [];
+    let totalBytes = 0;
+
+    try {
+      for await (const part of request.files()) {
+        const filename = sanitizeUploadFilename(part.filename);
+        const unique = `${randomBytes(8).toString('hex')}-${filename}`;
+        const destination = path.join(userDir, unique);
+        const chunks = [];
+        let fileBytes = 0;
+
+        for await (const chunk of part.file) {
+          fileBytes += chunk.length;
+          totalBytes += chunk.length;
+          if (part.file.truncated || fileBytes > UPLOAD_FILE_LIMIT_BYTES) {
+            const error = new Error('file exceeds per-file size limit');
+            error.statusCode = 413;
+            throw error;
+          }
+          if (totalBytes > UPLOAD_TOTAL_LIMIT_BYTES) {
+            const error = new Error('total upload size exceeds request limit');
+            error.statusCode = 413;
+            throw error;
+          }
+          chunks.push(chunk);
+        }
+
+        if (part.file.truncated) {
+          const error = new Error('file exceeds per-file size limit');
+          error.statusCode = 413;
+          throw error;
+        }
+
+        await writeFile(destination, Buffer.concat(chunks));
+        paths.push(destination);
+      }
+    } catch (err) {
+      // clean up any partially-written files on failure
+      await Promise.all(
+        paths.map((p) => rm(p, { force: true }).catch(() => {})),
+      );
+      throw err;
+    }
+
+    if (paths.length === 0) {
+      const error = new Error('no files uploaded');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    reply.code(200);
+    return { paths };
   });
 
   app.setNotFoundHandler(async (request, reply) => {

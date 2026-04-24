@@ -32,6 +32,7 @@ async function swaggerPlugin(fastify) {
         { name: 'Windows', description: 'tmux 윈도우 관리 API' },
         { name: 'Panes', description: 'tmux 패널 관리 API' },
         { name: 'Commands', description: '명령 전송 API' },
+        { name: 'Uploads', description: '파일 업로드 API' },
       ],
       components: {
         securitySchemes: {
