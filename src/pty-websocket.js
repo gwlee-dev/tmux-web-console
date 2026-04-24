@@ -6,11 +6,12 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-function normalizePositiveInteger(value, fallback) {
+export function normalizePositiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/* v8 ignore start -- filesystem + node-pty native dependency, covered via integration only */
 function ensureNodePtySpawnHelperExecutable() {
   const entryPath = require.resolve('node-pty');
   const packageDir = path.dirname(path.dirname(entryPath));
@@ -31,8 +32,9 @@ function getNodePtyModule() {
   ensureNodePtySpawnHelperExecutable();
   return require('node-pty');
 }
+/* v8 ignore stop */
 
-function buildPtyEnv() {
+export function buildPtyEnv() {
   const env = {
     ...process.env,
     TERM: 'xterm-256color',
@@ -44,6 +46,7 @@ function buildPtyEnv() {
   return env;
 }
 
+/* v8 ignore start -- filesystem probing, exercised only in Node runtime */
 function resolveTmuxBinary() {
   if (process.env.TMUX_BINARY) {
     return process.env.TMUX_BINARY;
@@ -56,8 +59,77 @@ function resolveTmuxBinary() {
 
   return 'tmux';
 }
+/* v8 ignore stop */
 
-function encodeFrame(opcode, payload = Buffer.alloc(0)) {
+/**
+ * XOR a masked WebSocket payload with its 4-byte mask.
+ * Cycles the mask index with `index % 4`, so any mask length is tolerated
+ * but RFC 6455 only mandates 4-byte masks.
+ */
+export function unmaskPayload(maskedPayload, mask) {
+  const decoded = Buffer.allocUnsafe(maskedPayload.length);
+  for (let index = 0; index < maskedPayload.length; index += 1) {
+    decoded[index] = maskedPayload[index] ^ mask[index % 4];
+  }
+  return decoded;
+}
+
+/**
+ * Parse a single WebSocket frame out of a buffer.
+ * Returns `null` when the buffer does not yet contain a complete frame, so the
+ * caller can accumulate more bytes and retry. On success returns the decoded
+ * frame (opcode + already-unmasked payload) and the remaining bytes that
+ * belong to a subsequent frame.
+ *
+ * The while-loop across multiple frames and the opcode dispatch (0x1 text /
+ * 0x8 close / 0x9 ping) live in the caller — this helper is pure byte parsing.
+ */
+export function parseWebSocketFrame(buffer) {
+  if (buffer.length < 2) {
+    return null;
+  }
+
+  const first = buffer[0];
+  const second = buffer[1];
+  const opcode = first & 0x0f;
+  const isMasked = (second & 0x80) !== 0;
+
+  let payloadLength = second & 0x7f;
+  let offset = 2;
+
+  if (payloadLength === 126) {
+    if (buffer.length < offset + 2) {
+      return null;
+    }
+    payloadLength = buffer.readUInt16BE(offset);
+    offset += 2;
+  } else if (payloadLength === 127) {
+    if (buffer.length < offset + 8) {
+      return null;
+    }
+    payloadLength = Number(buffer.readBigUInt64BE(offset));
+    offset += 8;
+  }
+
+  const maskLength = isMasked ? 4 : 0;
+  const frameLength = offset + maskLength + payloadLength;
+  if (buffer.length < frameLength) {
+    return null;
+  }
+
+  let payload = buffer.subarray(offset + maskLength, frameLength);
+  if (isMasked) {
+    const mask = buffer.subarray(offset, offset + 4);
+    payload = unmaskPayload(payload, mask);
+  }
+
+  return {
+    frame: { opcode, payload },
+    remaining: buffer.subarray(frameLength),
+  };
+}
+
+export function encodeFrame(opcode, payload = Buffer.alloc(0)) {
   const length = payload.length;
 
   if (length < 126) {
@@ -79,11 +151,11 @@ function encodeFrame(opcode, payload = Buffer.alloc(0)) {
   return Buffer.concat([header, payload]);
 }
 
-function createWebSocketAcceptValue(key) {
+export function createWebSocketAcceptValue(key) {
   return createHash('sha1').update(`${key}${WEBSOCKET_GUID}`).digest('base64');
 }
 
-function createHttpErrorResponse(statusCode, message) {
+export function createHttpErrorResponse(statusCode, message) {
   const reasonPhrase =
     statusCode === 400 ? 'Bad Request' : statusCode === 401 ? 'Unauthorized' : statusCode === 404 ? 'Not Found' : 'Internal Server Error';
   const body = JSON.stringify({ error: message });
@@ -161,48 +233,14 @@ export function acceptWebSocketUpgrade(request, socket, head = Buffer.alloc(0)) 
   };
 
   const parseBufferedFrames = () => {
-    while (buffered.length >= 2) {
-      const first = buffered[0];
-      const second = buffered[1];
-      const opcode = first & 0x0f;
-      const isMasked = (second & 0x80) !== 0;
-
-      let payloadLength = second & 0x7f;
-      let offset = 2;
-
-      if (payloadLength === 126) {
-        if (buffered.length < offset + 2) {
-          return;
-        }
-
-        payloadLength = buffered.readUInt16BE(offset);
-        offset += 2;
-      } else if (payloadLength === 127) {
-        if (buffered.length < offset + 8) {
-          return;
-        }
-
-        payloadLength = Number(buffered.readBigUInt64BE(offset));
-        offset += 8;
-      }
-
-      const maskLength = isMasked ? 4 : 0;
-      const frameLength = offset + maskLength + payloadLength;
-      if (buffered.length < frameLength) {
+    while (true) {
+      const result = parseWebSocketFrame(buffered);
+      if (!result) {
         return;
       }
 
-      let payload = buffered.subarray(offset + maskLength, frameLength);
-      if (isMasked) {
-        const mask = buffered.subarray(offset, offset + 4);
-        const decoded = Buffer.allocUnsafe(payload.length);
-        for (let index = 0; index < payload.length; index += 1) {
-          decoded[index] = payload[index] ^ mask[index % 4];
-        }
-        payload = decoded;
-      }
-
-      buffered = buffered.subarray(frameLength);
+      buffered = result.remaining;
+      const { opcode, payload } = result.frame;
 
       if (opcode === 0x8) {
         close();
@@ -257,6 +295,7 @@ export function acceptWebSocketUpgrade(request, socket, head = Buffer.alloc(0)) 
   };
 }
 
+/* v8 ignore start -- node-pty native dependency, covered only via integration runtime */
 export async function createTmuxPtyBridge(tmuxClient, { paneId, cols, rows }) {
   const metadata = await tmuxClient.preparePanePtyTarget(paneId);
   const normalizedCols = normalizePositiveInteger(cols, 120);
@@ -333,3 +372,4 @@ export async function createTmuxPtyBridge(tmuxClient, { paneId, cols, rows }) {
     },
   };
 }
+/* v8 ignore stop */
