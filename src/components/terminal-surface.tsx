@@ -261,15 +261,15 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         '.xterm-helper-textarea',
       );
 
-      // iOS (iPad/iPhone/iPod, iPadOS 포함) 에서는 soft keyboard 의 IME 동작을
-      // 완전히 우리가 관리한다:
-      //   - keydown/keypress 는 전부 xterm 으로 흘리지 않음 (jamo/space/enter
-      //     같은 키가 중복 송신되는 것 방지)
-      //   - input 이벤트만 해석해 PTY 로 전송
-      //   - 같은 microtask 안에서 발생하는 delete+insert 쌍은 하나의
-      //     송신으로 합쳐 xterm repaint 플리커를 줄인다
-      // 외부 BT 키보드 + iOS 조합은 한국어 입력을 우리 경로로 처리해도
-      // 정상적으로 동작한다.
+      // iOS (iPad/iPhone/iPod + iPadOS) 에서는 soft keyboard IME 를 완전히
+      // 우리가 관리한다. 데스크톱은 xterm 기본 CompositionHelper 경로를 그대로
+      // 사용하므로 이 블록 전체를 건드리지 않는다.
+      //
+      // 핵심 아이디어: 한글 syllable 조합 중에는 PTY 왕복을 하지 않고
+      // xterm 버퍼에 직접 write 하여 로컬 에코 — 사용자는 타이핑 즉시 반응을
+      // 본다. syllable 이 확정되는 시점 (비-한글 입력, Enter, 300ms idle) 에만
+      // PTY 로 commit 하고, PTY 가 돌려주는 echo 바이트가 xterm 을 덮어
+      // 화면이 올바르게 수렴하도록 한다.
       const isIOS = typeof navigator !== 'undefined' && (
         /iPad|iPhone|iPod/.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
@@ -279,51 +279,58 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         event.stopImmediatePropagation();
       };
 
-      let pendingEmit = '';
-      const flushPendingEmit = () => {
-        if (!pendingEmit) return;
-        onInputRef.current(pendingEmit);
-        pendingEmit = '';
-      };
-      const enqueue = (data: string) => {
-        if (!pendingEmit) {
-          queueMicrotask(flushPendingEmit);
-        }
-        pendingEmit += data;
-      };
-
-      const handleSoftKeyboardInput = (event: Event) => {
+      // iOS Hangul 로컬 에코 — 음절 경계 안에서는 local echo, 단어 경계에서만
+      // PTY 왕복 발생. 이전 구현은 매 음절 전환에서 commit 했는데, commit 의
+      // eraseLocal 이 xterm 커서를 뒤로 보내고 이어 local write 가 새 음절을
+      // 같은 위치에 쓰면, 뒤늦게 PTY echo 가 도착해 새 음절 다음에 이전 음절을
+      // append 해서 "이런" → "런이" 같은 꼬임이 발생했다.
+      //
+      // 새 규칙:
+      //   - buffer: 확정됐지만 아직 PTY 로 보내지 않은 음절 누적 문자열
+      //     (여전히 화면에 그려져 있음)
+      //   - current: 현재 조합 중인 한 음절 (local 에만 표시)
+      //   - localWidth: buffer + current 가 차지한 terminal cell 수
+      //   - commitAll() 은 local 전체를 지우고 buffer+current 를 한 번에 PTY
+      //     로 보냄. PTY echo 가 돌아와 xterm 이 같은 위치에 재작도 → 수렴.
+      //   - commitAll 은 공백/Enter/Delete-forward 또는 300ms idle 에서만 호출.
+      // iOS 한글 입력 전달 — 로컬 에코 없이 input 이벤트를 그대로 PTY 로 전달.
+      //
+      // 과거에 currentSyllable 를 xterm 에 직접 write 해 PTY 왕복을 숨기려
+      // 했으나, 서버에서 돌아오는 echo 바이트가 로컬 write 와 async 하게
+      // 부딪혀 "이런식식으로" 처럼 커서가 엇갈리는 race condition 을 만들었다.
+      // 로컬 에코를 제거하면 PTY echo 만이 렌더링 근원이므로 상태가 수렴한다.
+      // 플리커는 동일하게 남지만 입력 결과가 신뢰 가능하다.
+      //
+      // iOS 의 한글 조합은 keydown(keyCode=0) / keypress 는 capture 단계에서
+      // 차단하고, input 의 inputType 만 번역해 PTY 로 보낸다. 음절 업데이트는
+      // deleteContentBackward + insertText 쌍으로 들어오므로 \x7f + 새 syllable
+      // 바이트가 그대로 shell 에 전달된다.
+      const handleIOSInput = (event: Event) => {
         const ie = event as InputEvent;
         let handled = true;
         switch (ie.inputType) {
           case 'insertText':
             if (ie.data) {
-              enqueue(ie.data);
+              onInputRef.current(ie.data);
             }
             break;
           case 'deleteContentBackward':
-            enqueue('\x7f');
+            onInputRef.current('\x7f');
             break;
           case 'insertLineBreak':
           case 'insertParagraph':
-            enqueue('\r');
-            // 엔터 후 textarea 를 비워 iOS IME 가 다음 composition 을
-            // clean state 에서 시작하도록 한다.
+            onInputRef.current('\r');
             queueMicrotask(() => {
               if (helperTextarea) helperTextarea.value = '';
             });
             break;
           case 'deleteContentForward':
-            enqueue('\x1b[3~');
+            onInputRef.current('\x1b[3~');
             break;
           default:
             handled = false;
         }
         if (handled) {
-          // xterm 의 _inputEvent 가 동일한 event 를 capture phase 로 구독
-          // (CoreBrowserTerminal.ts:384) 하고 insertText 의 data 를 그대로
-          // triggerDataEvent 로 emit 하기 때문에, container capture 단계에서
-          // 전파를 차단해 중복 송신을 막는다.
           ie.stopImmediatePropagation();
         }
       };
@@ -335,8 +342,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       if (isIOS) {
         container.addEventListener('keydown', handleIOSKeyEvent, true);
         container.addEventListener('keypress', handleIOSKeyEvent, true);
+        container.addEventListener('input', handleIOSInput, true);
       }
-      container.addEventListener('input', handleSoftKeyboardInput, true);
 
       const inputDisposable = terminal.onData((data) => {
         onInputRef.current(data);
@@ -347,8 +354,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         if (isIOS) {
           container.removeEventListener('keydown', handleIOSKeyEvent, true);
           container.removeEventListener('keypress', handleIOSKeyEvent, true);
+          container.removeEventListener('input', handleIOSInput, true);
         }
-        container.removeEventListener('input', handleSoftKeyboardInput, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
         terminal.dispose();
