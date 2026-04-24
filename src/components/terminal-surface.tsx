@@ -261,26 +261,35 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         '.xterm-helper-textarea',
       );
 
-      // iOS soft keyboard event 시퀀스: keydown(keyCode=0) → keypress(keyCode=유니코드) → input.
-      // keydown 만 차단해도 keypress 가 별도 listener 로 fire 되어 xterm 이 emit.
-      // keydown 차단 시 flag 를 세워 직후의 keypress 도 함께 차단한다.
-      // 외부 BT 키보드는 keydown 에서 실제 keyCode 를 내므로 flag 가 서지 않아 영향 없음.
-      let blockSoftKeyboardChain = false;
+      // iOS (iPad/iPhone/iPod, iPadOS 포함) 에서는 soft keyboard 의 IME 동작을
+      // 완전히 우리가 관리한다:
+      //   - keydown/keypress 는 전부 xterm 으로 흘리지 않음 (jamo/space/enter
+      //     같은 키가 중복 송신되는 것 방지)
+      //   - input 이벤트만 해석해 PTY 로 전송
+      //   - 같은 microtask 안에서 발생하는 delete+insert 쌍은 하나의
+      //     송신으로 합쳐 xterm repaint 플리커를 줄인다
+      // 외부 BT 키보드 + iOS 조합은 한국어 입력을 우리 경로로 처리해도
+      // 정상적으로 동작한다.
+      const isIOS = typeof navigator !== 'undefined' && (
+        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      );
 
-      const handleSoftKeyboardKeydown = (event: Event) => {
-        const ke = event as KeyboardEvent;
-        if (ke.keyCode === 0) {
-          blockSoftKeyboardChain = true;
-          ke.stopImmediatePropagation();
-        } else {
-          blockSoftKeyboardChain = false;
-        }
+      const handleIOSKeyEvent = (event: Event) => {
+        event.stopImmediatePropagation();
       };
 
-      const handleSoftKeyboardKeypress = (event: Event) => {
-        if (blockSoftKeyboardChain) {
-          event.stopImmediatePropagation();
+      let pendingEmit = '';
+      const flushPendingEmit = () => {
+        if (!pendingEmit) return;
+        onInputRef.current(pendingEmit);
+        pendingEmit = '';
+      };
+      const enqueue = (data: string) => {
+        if (!pendingEmit) {
+          queueMicrotask(flushPendingEmit);
         }
+        pendingEmit += data;
       };
 
       const handleSoftKeyboardInput = (event: Event) => {
@@ -289,15 +298,15 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         switch (ie.inputType) {
           case 'insertText':
             if (ie.data) {
-              onInputRef.current(ie.data);
+              enqueue(ie.data);
             }
             break;
           case 'deleteContentBackward':
-            onInputRef.current('\x7f');
+            enqueue('\x7f');
             break;
           case 'insertLineBreak':
           case 'insertParagraph':
-            onInputRef.current('\r');
+            enqueue('\r');
             // 엔터 후 textarea 를 비워 iOS IME 가 다음 composition 을
             // clean state 에서 시작하도록 한다.
             queueMicrotask(() => {
@@ -305,7 +314,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
             });
             break;
           case 'deleteContentForward':
-            onInputRef.current('\x1b[3~');
+            enqueue('\x1b[3~');
             break;
           default:
             handled = false;
@@ -323,8 +332,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       // 기존 listener 뒤로 줄을 서서 `stopImmediatePropagation` 이 소용없다
       // (xterm 이 먼저 emit). 상위 container 의 CAPTURE phase 에 등록하면
       // target phase 로 내려가기 전에 우리 listener 가 실행된다.
-      container.addEventListener('keydown', handleSoftKeyboardKeydown, true);
-      container.addEventListener('keypress', handleSoftKeyboardKeypress, true);
+      if (isIOS) {
+        container.addEventListener('keydown', handleIOSKeyEvent, true);
+        container.addEventListener('keypress', handleIOSKeyEvent, true);
+      }
       container.addEventListener('input', handleSoftKeyboardInput, true);
 
       const inputDisposable = terminal.onData((data) => {
@@ -333,8 +344,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
 
       cleanup = () => {
         fontFaceSet.removeEventListener?.('loadingdone', refreshForFontLoad);
-        container.removeEventListener('keydown', handleSoftKeyboardKeydown, true);
-        container.removeEventListener('keypress', handleSoftKeyboardKeypress, true);
+        if (isIOS) {
+          container.removeEventListener('keydown', handleIOSKeyEvent, true);
+          container.removeEventListener('keypress', handleIOSKeyEvent, true);
+        }
         container.removeEventListener('input', handleSoftKeyboardInput, true);
         inputDisposable.dispose();
         resizeObserver.disconnect();
