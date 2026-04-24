@@ -408,23 +408,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
       );
 
-      // iOS 소프트 키보드 backspace 롱프레스 → 반복 처리. textarea 가 비어
-      // 있을 때 backspace 를 누르면 input 이벤트가 안 오고 keydown repeat 도
-      // 안 와서 한 번만 보내진다. keydown 으로 시작 시점을 잡고, keyup 이나
-      // touchend 가 올 때까지 타이머로 반복.
-      let backspaceRepeatTimer: ReturnType<typeof setInterval> | null = null;
-      let backspaceRepeatDelay: ReturnType<typeof setTimeout> | null = null;
-      const clearBackspaceRepeat = () => {
-        if (backspaceRepeatDelay !== null) {
-          clearTimeout(backspaceRepeatDelay);
-          backspaceRepeatDelay = null;
-        }
-        if (backspaceRepeatTimer !== null) {
-          clearInterval(backspaceRepeatTimer);
-          backspaceRepeatTimer = null;
-        }
-      };
-
       const debugBS = debug;
       let bsOverlay: HTMLDivElement | null = null;
       const bsLines: string[] = [];
@@ -458,42 +441,24 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         if (bsOverlay) bsOverlay.textContent = bsLines.join('\n');
       };
 
+      // iOS soft keyboard 는 Backspace 롱프레스 시 keydown 을 한 번만 발생
+      // 시키고 이후 repeat 정보를 웹으로 전달하지 않는다. W3C UI Events 스펙
+      // 위반이며, PWA / WKWebView / Capacitor / Tauri 등으로도 우회 불가능.
+      // 자세한 조사 결과는 `.omc/research/ios-soft-keyboard-repeat/report.md`
+      // 에 있다.
+      //
+      // 따라서 "한 번 눌러 한 글자 삭제" 로만 동작한다. textarea 에 문자가
+      // 있을 때는 OS 가 input 이벤트를 반복 fire 하므로 handleIOSInput 이
+      // 처리한다. 빈 textarea 에서는 keydown 한 번에 \x7f 한 번.
+      //
+      // 향후 CodeMirror 6 의 sentinel textarea + pendingIOSKey 패턴을 이식하면
+      // 진짜 repeat 도 얻을 수 있지만, 현재는 보류 상태.
       const handleIOSKeyEvent = (event: Event) => {
-        // iOS 는 textarea 가 비어있을 때 Backspace 키를 눌러도 `input` 이벤트
-        // 를 fire 하지 않는다 (Enter 는 insertLineBreak input 이벤트로 여전히
-        // 온다). 따라서 Backspace 만 keydown 에서 직접 PTY 로 보내 "기존 PTY
-        // 출력이 안 지워지는" 이슈를 해결하고, Enter 는 input handler 에 맡겨
-        // 중복 송신을 피한다.
         if (event.type === 'keydown') {
           const ke = event as KeyboardEvent;
-          if (ke.key === 'Backspace') {
-            bsLog(`keydown val=${JSON.stringify(helperTextarea?.value ?? '')} repeat=${ke.repeat}`);
-            if ((helperTextarea?.value ?? '') === '') {
-              onInputRef.current('\x7f');
-              // 롱프레스 자동 반복: 500ms 후 50ms 주기.
-              clearBackspaceRepeat();
-              backspaceRepeatDelay = setTimeout(() => {
-                backspaceRepeatDelay = null;
-                backspaceRepeatTimer = setInterval(() => {
-                  const currentVal = helperTextarea?.value ?? '';
-                  if (currentVal !== '') {
-                    bsLog(`repeat STOPPED val=${JSON.stringify(currentVal)}`);
-                    clearBackspaceRepeat();
-                    return;
-                  }
-                  bsLog('repeat tick');
-                  onInputRef.current('\x7f');
-                }, 50);
-              }, 500);
-            } else {
-              bsLog('keydown but val not empty, skipping');
-            }
-          }
-        } else if (event.type === 'keyup') {
-          const ke = event as KeyboardEvent;
-          if (ke.key === 'Backspace') {
-            bsLog('keyup');
-            clearBackspaceRepeat();
+          if (ke.key === 'Backspace' && (helperTextarea?.value ?? '') === '') {
+            bsLog(`keydown backspace (single emit)`);
+            onInputRef.current('\x7f');
           }
         }
         event.stopImmediatePropagation();
@@ -562,7 +527,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       if (isIOS) {
         container.addEventListener('keydown', handleIOSKeyEvent, true);
         container.addEventListener('keypress', handleIOSKeyEvent, true);
-        container.addEventListener('keyup', handleIOSKeyEvent, true);
         container.addEventListener('input', handleIOSInput, true);
       }
 
@@ -575,9 +539,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         if (isIOS) {
           container.removeEventListener('keydown', handleIOSKeyEvent, true);
           container.removeEventListener('keypress', handleIOSKeyEvent, true);
-          container.removeEventListener('keyup', handleIOSKeyEvent, true);
           container.removeEventListener('input', handleIOSInput, true);
-          clearBackspaceRepeat();
           if (bsOverlay) bsOverlay.remove();
         }
         container.removeEventListener('touchstart', handleTouchStart, true);
