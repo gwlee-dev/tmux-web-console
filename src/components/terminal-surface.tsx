@@ -24,6 +24,7 @@ type TerminalSurfaceProps = {
   mountClassName?: string;
   onInput: (data: string) => void;
   onResize?: (size: { cols: number; rows: number }) => void;
+  debug?: boolean;
 };
 
 export type TerminalSurfaceHandle = {
@@ -47,7 +48,7 @@ function renderSnapshot(terminal: Terminal, snapshot: PaneSnapshot | null, fallb
 }
 
 export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(function TerminalSurface(
-  { snapshot, selectedPaneId, statusMessage, mode = 'snapshot', themeMode = 'dark', className, mountClassName, onInput, onResize },
+  { snapshot, selectedPaneId, statusMessage, mode = 'snapshot', themeMode = 'dark', className, mountClassName, onInput, onResize, debug = false },
   ref,
 ) {
   const isMobile = useIsMobile();
@@ -243,10 +244,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       //     상위에서 먼저 잡기 위함.
       //   - touch-action: none 도 container 전체에 적용해 iOS Safari 가
       //     visual viewport 를 스크롤하는 기본 동작을 차단.
-      const debugScroll =
-        typeof window !== 'undefined' &&
-        (window.localStorage?.getItem('debug_scroll') === '1' ||
-          new URLSearchParams(window.location.search).get('debugScroll') === '1');
+      const debugScroll = debug;
       let debugOverlay: HTMLDivElement | null = null;
       const overlayLines: string[] = [];
       if (debugScroll) {
@@ -281,52 +279,50 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
 
       const dispatchWheel = (deltaX: number, deltaY: number) => {
         if (deltaX === 0 && deltaY === 0) return;
-        // iOS 에서 터치 swipe 로부터 스크롤을 구현. tmux 의 mouse mode 가 ON
-        // 이면 xterm 은 `.xterm` 에 붙여둔 wheel listener 를 통해 tmux 로 SGR
-        // mouse 시퀀스를 전송한다. 우리가 합성한 WheelEvent 를 그대로 dispatch
-        // 하면 `consumeWheelEvent` 가 DPR 기반 cell-height 임계치 때문에 0 라인
-        // 을 반환해 아무 일도 일어나지 않는다. 그래서:
-        //   - tmux mouse mode 가 활성화된 경우: cell 단위로 몇 줄 스크롤 할
-        //     지 직접 계산한 뒤, 그 줄 수만큼 SGR mouse wheel 이벤트 바이트
-        //     (CSI < 64 ; x ; y M 또는 65) 를 PTY 로 바로 write 한다. xterm
-        //     우회. tmux 는 SGR 프로토콜을 쉽게 해석한다.
-        //   - 그 외 (일반 scrollback): terminal.scrollLines 로 xterm 자체
-        //     viewport 를 움직인다.
         const xtermEl = terminal.element;
         const cellHeight =
           (terminal as unknown as {
             _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } };
           })._core?._renderService?.dimensions?.css?.cell?.height ?? 16;
-        const linesY = deltaY === 0 ? 0 : (deltaY > 0 ? 1 : -1) * Math.max(1, Math.round(Math.abs(deltaY) / cellHeight));
-        const mouseEventsActive = xtermEl?.classList.contains('enable-mouse-events');
+        // cell 의 약 1.5 배가 쌓여야 1 line 으로 emit. iOS 터치 delta 가
+        // 촘촘해서 cell height 기준이면 1 swipe 에 수십 줄 넘겨버림.
+        const threshold = Math.max(20, cellHeight * 1.5);
+        wheelAccumY += deltaY;
+        wheelAccumX += deltaX;
+        const linesY = (wheelAccumY > 0 ? 1 : -1) * Math.floor(Math.abs(wheelAccumY) / threshold);
+        const linesX = (wheelAccumX > 0 ? 1 : -1) * Math.floor(Math.abs(wheelAccumX) / threshold);
+        if (linesY !== 0) wheelAccumY -= linesY * threshold;
+        if (linesX !== 0) wheelAccumX -= linesX * threshold;
+        if (linesY === 0 && linesX === 0) return;
 
-        sLog(`dispatchWheel dy=${deltaY.toFixed(1)} cell=${cellHeight} lines=${linesY} mouseActive=${mouseEventsActive}`);
+        const mouseEventsActive = xtermEl?.classList.contains('enable-mouse-events');
+        sLog(`dispatchWheel dy=${deltaY.toFixed(1)} acc=${wheelAccumY.toFixed(1)} threshold=${threshold.toFixed(1)} lines=${linesY} mouseActive=${mouseEventsActive}`);
 
         if (mouseEventsActive && linesY !== 0) {
-          // SGR extended mouse protocol 로 wheel 이벤트 emit. column/row 는
-          // 터미널 좌표계 (1-based). 포커스를 잃지 않도록 현재 viewport 중앙
-          // 근처 셀을 찍는다.
+          // tmux mouse mode: SGR extended mouse wheel 바이트를 PTY 로 직접.
           const col = Math.max(1, Math.round((terminal.cols || 80) / 2));
           const row = Math.max(1, Math.round((terminal.rows || 24) / 2));
           const button = linesY > 0 ? 65 : 64; // 65 = wheel-down, 64 = wheel-up
           const count = Math.abs(linesY);
           for (let i = 0; i < count; i++) {
-            const seq = `\x1b[<${button};${col};${row}M`;
-            onInputRef.current(seq);
+            onInputRef.current(`\x1b[<${button};${col};${row}M`);
           }
-          sLog(`SGR wheel button=${button} count=${count} col=${col} row=${row}`);
+          sLog(`SGR wheel button=${button} count=${count}`);
           return;
         }
 
         if (linesY !== 0) {
-          sLog(`scrollLines ${linesY} (before: ybase=${terminal.buffer.active.viewportY})`);
+          sLog(`scrollLines ${linesY}`);
           terminal.scrollLines(linesY);
-          sLog(`scrollLines done (after: ybase=${terminal.buffer.active.viewportY})`);
         }
       };
 
       let lastTouchY: number | null = null;
       let lastTouchX: number | null = null;
+      // touchmove 의 아주 작은 delta (1-2 px) 까지 1 line 으로 올리면 swipe 가
+      // 과도하게 빠르다. cell height 의 60% 가 쌓일 때마다 1 line 으로 방출.
+      let wheelAccumY = 0;
+      let wheelAccumX = 0;
 
       const handleTouchStart = (event: TouchEvent) => {
         sLog(`touchstart count=${event.touches.length} target=${(event.target as Element | null)?.tagName}`);
@@ -354,6 +350,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       const handleTouchEnd = () => {
         lastTouchX = null;
         lastTouchY = null;
+        // swipe 끝나면 누적 잔여값 초기화 (다음 제스처가 이전 잔여를 이어받
+        // 는 것 방지).
+        wheelAccumX = 0;
+        wheelAccumY = 0;
       };
 
       const previousTouchAction = container.style.touchAction;
@@ -425,6 +425,39 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         }
       };
 
+      const debugBS = debug;
+      let bsOverlay: HTMLDivElement | null = null;
+      const bsLines: string[] = [];
+      if (debugBS) {
+        bsOverlay = document.createElement('div');
+        bsOverlay.style.cssText = [
+          'position:fixed',
+          'top:8px',
+          'left:8px',
+          'right:8px',
+          'max-height:40vh',
+          'overflow:hidden',
+          'pointer-events:none',
+          'z-index:99999',
+          'background:rgba(0,0,0,0.7)',
+          'color:#ffd27f',
+          'font:11px/1.3 ui-monospace,monospace',
+          'padding:6px 8px',
+          'border-radius:6px',
+          'white-space:pre-wrap',
+          'word-break:break-all',
+        ].join(';');
+        document.body.appendChild(bsOverlay);
+      }
+      const bsLog = (msg: string) => {
+        if (!debugBS) return;
+        const line = `[${new Date().toISOString().slice(14, 23)}] ${msg}`;
+        console.log('[bs]', line);
+        bsLines.push(line);
+        if (bsLines.length > 30) bsLines.shift();
+        if (bsOverlay) bsOverlay.textContent = bsLines.join('\n');
+      };
+
       const handleIOSKeyEvent = (event: Event) => {
         // iOS 는 textarea 가 비어있을 때 Backspace 키를 눌러도 `input` 이벤트
         // 를 fire 하지 않는다 (Enter 는 insertLineBreak input 이벤트로 여전히
@@ -433,24 +466,33 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         // 중복 송신을 피한다.
         if (event.type === 'keydown') {
           const ke = event as KeyboardEvent;
-          if (ke.key === 'Backspace' && (helperTextarea?.value ?? '') === '') {
-            onInputRef.current('\x7f');
-            // 롱프레스 자동 반복: 500ms 후 50ms 주기.
-            clearBackspaceRepeat();
-            backspaceRepeatDelay = setTimeout(() => {
-              backspaceRepeatDelay = null;
-              backspaceRepeatTimer = setInterval(() => {
-                if ((helperTextarea?.value ?? '') !== '') {
-                  clearBackspaceRepeat();
-                  return;
-                }
-                onInputRef.current('\x7f');
-              }, 50);
-            }, 500);
+          if (ke.key === 'Backspace') {
+            bsLog(`keydown val=${JSON.stringify(helperTextarea?.value ?? '')} repeat=${ke.repeat}`);
+            if ((helperTextarea?.value ?? '') === '') {
+              onInputRef.current('\x7f');
+              // 롱프레스 자동 반복: 500ms 후 50ms 주기.
+              clearBackspaceRepeat();
+              backspaceRepeatDelay = setTimeout(() => {
+                backspaceRepeatDelay = null;
+                backspaceRepeatTimer = setInterval(() => {
+                  const currentVal = helperTextarea?.value ?? '';
+                  if (currentVal !== '') {
+                    bsLog(`repeat STOPPED val=${JSON.stringify(currentVal)}`);
+                    clearBackspaceRepeat();
+                    return;
+                  }
+                  bsLog('repeat tick');
+                  onInputRef.current('\x7f');
+                }, 50);
+              }, 500);
+            } else {
+              bsLog('keydown but val not empty, skipping');
+            }
           }
         } else if (event.type === 'keyup') {
           const ke = event as KeyboardEvent;
           if (ke.key === 'Backspace') {
+            bsLog('keyup');
             clearBackspaceRepeat();
           }
         }
@@ -536,6 +578,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
           container.removeEventListener('keyup', handleIOSKeyEvent, true);
           container.removeEventListener('input', handleIOSInput, true);
           clearBackspaceRepeat();
+          if (bsOverlay) bsOverlay.remove();
         }
         container.removeEventListener('touchstart', handleTouchStart, true);
         container.removeEventListener('touchmove', handleTouchMove, true);
