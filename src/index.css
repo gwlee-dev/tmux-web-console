@@ -4,6 +4,14 @@
 @import '@fontsource-variable/geist';
 
 @font-face {
+  font-family: 'Pretendard Variable';
+  src: url('/fonts/pretendard/PretendardVariable.woff2') format('woff2-variations');
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
   font-family: 'Monoplex KR Nerd';
   src: url('/fonts/monoplex-kr-nerd/MonoplexKRNerd-Regular.woff') format('woff');
   font-weight: 400;
@@ -15,7 +23,7 @@
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  --font-sans: 'Pretendard Variable', 'Geist Variable', system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -152,6 +160,10 @@
   }
 }
 
+
+.xterm {
+  font-family: 'Monoplex KR Nerd', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace !important;
+}
 
 @media (max-width: 768px) {
   .terminal-surface .xterm-screen {
