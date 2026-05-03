@@ -1506,6 +1506,9 @@ function App() {
                         const out = toolbarRef.current?.applyAndConsume(data) ?? data;
                         queueTerminalInput(out);
                       }}
+                      onPasteFiles={(files) => {
+                        void toolbarRef.current?.pasteFiles(files);
+                      }}
                       onResize={queueTerminalResize}
                       debug={debugMode}
                     />
