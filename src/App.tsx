@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
-import { TerminalToolbar } from '@/components/terminal-toolbar';
+import { TerminalToolbar, type TerminalToolbarHandle } from '@/components/terminal-toolbar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
@@ -350,6 +350,7 @@ function App() {
   const pendingResizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef('');
   const terminalRef = useRef<TerminalSurfaceHandle | null>(null);
+  const toolbarRef = useRef<TerminalToolbarHandle | null>(null);
   const mobileCommandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const ptySocketRef = useRef<WebSocket | null>(null);
   const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -1499,13 +1500,18 @@ function App() {
                       themeMode={resolvedThemeMode}
                       selectedPaneId={selectedPaneId}
                       statusMessage={selectedPaneId ? 'pane PTY 연결 중...' : '왼쪽 목록에서 세션을 선택해주세요.'}
-                      onInput={queueTerminalInput}
+                      onInput={(data) => {
+                        // toolbar 의 modifier 가 armed 일 경우 변환 후 전송 +
+                        // modifier 자동 disarm. 그 외에는 raw 그대로.
+                        const out = toolbarRef.current?.applyAndConsume(data) ?? data;
+                        queueTerminalInput(out);
+                      }}
                       onResize={queueTerminalResize}
                       debug={debugMode}
                     />
                   </div>
                   {selectedPaneId ? (
-                    <TerminalToolbar onSend={queueTerminalInput} />
+                    <TerminalToolbar ref={toolbarRef} onSend={queueTerminalInput} />
                   ) : null}
                 </div>
 
