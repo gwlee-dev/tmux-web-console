@@ -46,6 +46,11 @@ export type TerminalToolbarHandle = {
    * 모디파이어 안 켜져 있으면 data 그대로 반환.
    */
   applyAndConsume: (data: string) => string;
+  /**
+   * 외부 (cmd+V / iOS 네이티브 paste 등) 가 클립보드 이미지를 갖고 있을 때
+   * 호출. /api/uploads 로 업로드 후 경로를 bracketed paste 로 PTY 에 전송.
+   */
+  pasteFiles: (files: File[]) => Promise<void>;
 };
 
 type ToolKeyProps = ComponentProps<typeof Button> & {
@@ -61,8 +66,11 @@ function ToolKey({ label, hint, onPress, className, ...rest }: ToolKeyProps) {
       variant="outline"
       size="sm"
       className={cn(
-        // 가벼운 터미널 chrome — px-2.5 / h-8 / mono
-        'h-8 shrink-0 px-2.5 font-mono text-xs leading-none',
+        // 가벼운 터미널 chrome — px-2.5 / h-8 / mono.
+        // bg-transparent! 로 Button outline variant 의 bg-background /
+        // dark:bg-input/30 을 무력화. button 내부 = corner triangle = 모두
+        // toolbar bg 가 균일하게 비쳐 둥근 모서리가 깨끗하게 살아난다.
+        'h-8 shrink-0 bg-transparent! px-2.5 font-mono text-xs leading-none dark:bg-transparent!',
         className,
       )}
       title={hint}
@@ -94,7 +102,7 @@ function ModifierToggle({ label, hint, pressed, onToggle }: ModifierToggleProps)
       onPressedChange={onToggle}
       title={hint}
       aria-label={hint}
-      className="h-8 shrink-0 px-2.5 font-mono text-xs leading-none"
+      className="h-8 shrink-0 bg-transparent px-2.5 font-mono text-xs leading-none data-[state=on]:bg-muted"
       // 터미널 helper textarea focus 를 잃지 않도록 mousedown / touchstart 차단.
       onMouseDown={(event) => event.preventDefault()}
       onTouchStart={(event) => event.preventDefault()}
@@ -272,18 +280,6 @@ export const TerminalToolbar = forwardRef<TerminalToolbarHandle, TerminalToolbar
     send(m.alt || m.ctrl ? '\x17' : '\x7f');
   };
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      applyAndConsume: (data: string) => {
-        const transformed = applyModsTransform(data, modsRef.current);
-        consumeMods();
-        return transformed;
-      },
-    }),
-    [],
-  );
-
   // hold 가 자연스러운 키 (Backspace / arrows / paging) 에 long-press repeat.
   // hold 중에는 modifier 유지 (Ctrl+→ 연타 보장), pointerup 에서 자동 해제.
   const bsHandlers = useRepeatPress(() => sendBackspace(), consumeMods);
@@ -387,16 +383,61 @@ export const TerminalToolbar = forwardRef<TerminalToolbarHandle, TerminalToolbar
     }
   };
 
+  // 외부 (cmd+V / iOS native paste) 가 paste 이벤트로 잡은 이미지를 받기
+  // 위한 entry. handle 의 [] deps 안에서 stale closure 가 안 잡히도록 ref
+  // indirection 사용 — 매 render 마다 최신 helpers 참조.
+  const pasteFilesImplRef = useRef<(files: File[]) => Promise<void>>(async () => {});
+  pasteFilesImplRef.current = async (files: File[]) => {
+    if (files.length === 0) return;
+    setUploading(true);
+    try {
+      const paths = await uploadFiles(files);
+      sendPathsAsPaste(paths);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '파일 업로드에 실패했습니다.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      applyAndConsume: (data: string) => {
+        const transformed = applyModsTransform(data, modsRef.current);
+        consumeMods();
+        return transformed;
+      },
+      pasteFiles: (files: File[]) => pasteFilesImplRef.current(files),
+    }),
+    [],
+  );
+
   return (
     <div
       className={cn(
-        'flex w-full items-center gap-2 overflow-x-auto whitespace-nowrap border-t border-border/60 bg-background/80 px-2 py-1.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
+        // 우측 padding 0 — sticky Backspace 가 viewport 우측 끝까지 닿도록.
+        // 내부 padding 은 sticky wrapper 가 자체적으로 가진다.
+        // 버튼들은 bg-transparent — toolbar bg 가 button 안과 corner triangle
+        // 모두에 균일하게 비쳐 둥근 모서리가 깨끗하게 보인다.
+        'flex w-full items-center gap-2 overflow-x-auto whitespace-nowrap border-t border-border/60 bg-background py-1.5 pl-2 pr-0 md:pr-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
         className,
       )}
       role="toolbar"
       aria-label="터미널 단축 키"
     >
-      <ButtonGroup>
+      {/*
+        overflow-hidden + rounded-lg: ButtonGroup 자체에 클립 영역을 부여한다.
+        ToolKey / ModifierToggle 은 bg-transparent 이므로, 버튼 border-radius
+        곡률 바깥(코너 삼각형)이 투명해져 그 뒤에 있는 terminal shell 컨테이너
+        (bg-[#050816]) 가 비쳐 모서리가 어둡게 잠식되는 문제가 생긴다.
+        ButtonGroup 에 overflow-hidden + rounded-lg 를 주면 버튼 코너 삼각형이
+        그룹 경계에서 잘려 terminal bg 가 노출되지 않는다.
+        rounded-lg = var(--radius) = 0.875rem = 14px —
+        버튼 끝 모서리의 rounded-r-lg! (14px) 와 곡률이 일치하므로
+        clip curve 와 border-radius curve 가 정렬된다.
+      */}
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ToolKey label="Esc" hint="Escape" onPress={() => sendAndConsume('\x1b')} />
         <ToolKey label="Tab" hint="Tab" onPress={() => sendAndConsume('\t')} />
       </ButtonGroup>
@@ -404,27 +445,27 @@ export const TerminalToolbar = forwardRef<TerminalToolbarHandle, TerminalToolbar
         Modifier 토글 — 한번 탭하면 armed (data-state=on), 다시 탭하면 disarm.
         다음에 누르는 키가 modifier 시퀀스로 전송된 직후 자동 disarm.
       */}
-      <ButtonGroup>
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ModifierToggle label="⌃" hint="Ctrl modifier (다음 키에 적용)" pressed={mods.ctrl} onToggle={() => toggleMod('ctrl')} />
         <ModifierToggle label="⌥" hint="Option / Alt modifier (다음 키에 적용)" pressed={mods.alt} onToggle={() => toggleMod('alt')} />
         <ModifierToggle label="⌘" hint="Command / Meta modifier (다음 키에 적용)" pressed={mods.cmd} onToggle={() => toggleMod('cmd')} />
       </ButtonGroup>
-      <ButtonGroup>
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ToolKey label={<ArrowLeft className="size-3.5" />} hint="← (홀드 = 연타)" {...arrowLeftHandlers} />
         <ToolKey label={<ArrowDown className="size-3.5" />} hint="↓ (홀드 = 연타)" {...arrowDownHandlers} />
         <ToolKey label={<ArrowUp className="size-3.5" />} hint="↑ (홀드 = 연타)" {...arrowUpHandlers} />
         <ToolKey label={<ArrowRight className="size-3.5" />} hint="→ (홀드 = 연타)" {...arrowRightHandlers} />
       </ButtonGroup>
-      <ButtonGroup>
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ToolKey label="^B" hint="Ctrl+B (tmux 프리픽스)" onPress={() => sendAndConsume('\x02')} />
         <ToolKey label="^C" hint="Ctrl+C (인터럽트)" onPress={() => sendAndConsume('\x03')} />
         <ToolKey label="^D" hint="Ctrl+D (EOF)" onPress={() => sendAndConsume('\x04')} />
       </ButtonGroup>
-      <ButtonGroup>
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ToolKey label={<ChevronsUp className="size-3.5" />} hint="Page Up (홀드 = 연타)" {...pgUpHandlers} />
         <ToolKey label={<ChevronsDown className="size-3.5" />} hint="Page Down (홀드 = 연타)" {...pgDnHandlers} />
       </ButtonGroup>
-      <ButtonGroup>
+      <ButtonGroup className="overflow-hidden rounded-lg">
         <ToolKey
           label={<ClipboardPaste className="size-3.5" />}
           hint="클립보드 붙여넣기 (텍스트/이미지 자동)"
@@ -454,21 +495,20 @@ export const TerminalToolbar = forwardRef<TerminalToolbarHandle, TerminalToolbar
         onChange={(event) => void handleFiles(event.target.files)}
       />
       {/*
-        Sticky Backspace — toolbar 가 좌우 스크롤되어도 항상 우측 끝에 노출.
-        iOS soft keyboard 의 backspace 가 longpress 연타에서 ~20 회로 abort
-        되어 대안으로 둔다. gradient 가 wrapper 내부에 있어서 좌측 buttons 를
-        가리지 않음 — wrapper 폭 = gradient(10) + button. ml-auto 로 toolbar
-        가 비어 있을 때만 우측 끝, scroll 시엔 sticky right-0 가 발동.
+        Sticky Backspace — 모바일 전용 (데스크탑은 하드웨어 키보드 사용).
+        toolbar 좌우 스크롤 시 항상 우측 끝에 노출.
+        wrapper 자체는 solid `bg-background` 로 스크롤 콘텐츠를 완전히 occlude.
+        wrapper 좌측 외부에 짧은 (w-4) gradient 가 absolute 로 떠 있어 soft
+        edge 효과만 제공 — 다른 버튼과 겹치지 않을 정도로 짧게.
       */}
-      <div className="sticky right-0 ml-auto flex shrink-0 items-stretch self-stretch">
+      <div className="sticky right-0 ml-auto flex shrink-0 items-stretch self-stretch bg-background pl-1 pr-2 md:hidden">
         <div
           aria-hidden
-          className="pointer-events-none w-10 shrink-0 bg-gradient-to-r from-transparent to-background"
+          className="pointer-events-none absolute right-full top-0 h-full w-4 bg-gradient-to-r from-transparent to-background"
         />
         <ToolKey
           label={<Delete className="size-3.5" />}
           hint="Backspace (홀드 = 연타)"
-          className="bg-background"
           {...bsHandlers}
         />
       </div>

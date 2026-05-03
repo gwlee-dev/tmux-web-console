@@ -24,6 +24,11 @@ type TerminalSurfaceProps = {
   mountClassName?: string;
   onInput: (data: string) => void;
   onResize?: (size: { cols: number; rows: number }) => void;
+  /**
+   * 클립보드에 이미지가 있는 paste 이벤트 (cmd+V / iOS native paste 메뉴) 가
+   * 잡혔을 때 호출. 텍스트만 있는 paste 는 xterm 기본 처리에 위임 (호출 안 됨).
+   */
+  onPasteFiles?: (files: File[]) => void;
   debug?: boolean;
 };
 
@@ -48,7 +53,7 @@ function renderSnapshot(terminal: Terminal, snapshot: PaneSnapshot | null, fallb
 }
 
 export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(function TerminalSurface(
-  { snapshot, selectedPaneId, statusMessage, mode = 'snapshot', themeMode = 'dark', className, mountClassName, onInput, onResize, debug = false },
+  { snapshot, selectedPaneId, statusMessage, mode = 'snapshot', themeMode = 'dark', className, mountClassName, onInput, onResize, onPasteFiles, debug = false },
   ref,
 ) {
   const isMobile = useIsMobile();
@@ -58,11 +63,13 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const onInputRef = useRef(onInput);
   const onResizeRef = useRef(onResize);
+  const onPasteFilesRef = useRef(onPasteFiles);
   const snapshotRef = useRef(snapshot);
   const statusMessageRef = useRef(statusMessage);
   const isMobileRef = useRef(isMobile);
 
   onInputRef.current = onInput;
+  onPasteFilesRef.current = onPasteFiles;
   onResizeRef.current = onResize;
   snapshotRef.current = snapshot;
   statusMessageRef.current = statusMessage;
@@ -364,6 +371,73 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
       container.addEventListener('touchend', handleTouchEnd, { capture: true, passive: true });
       container.addEventListener('touchcancel', handleTouchEnd, { capture: true, passive: true });
 
+      // cmd+V / iOS native paste 메뉴: 클립보드에 이미지가 있으면 가로채서
+      // onPasteFiles 콜백으로 넘긴다 (서버에 업로드 후 경로를 PTY 로 보내는
+      // toolbar 의 pasteFiles 와 같은 흐름). 텍스트만 있는 paste 는 그대로
+      // 두어 xterm 의 기본 paste 처리 (bracketed paste) 가 동작.
+      const handlePasteEvent = (event: ClipboardEvent) => {
+        const items = event.clipboardData?.items;
+        if (!items || items.length === 0) return;
+        const imageFiles: File[] = [];
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const f = item.getAsFile();
+            if (f) {
+              imageFiles.push(f);
+              break; // 한 번에 하나만 — Claude Code 등 CLI 가 다중 경로를 못 다룸
+            }
+          }
+        }
+        if (imageFiles.length === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onPasteFilesRef.current?.(imageFiles);
+      };
+      container.addEventListener('paste', handlePasteEvent, true);
+
+      // Drag-and-drop 이미지: Finder / Photos / Files 등에서 직접 끌어다
+      // 떨어뜨리는 경우. paste 와 같은 onPasteFiles 파이프 재사용.
+      // dragover 에서 preventDefault 해야 drop 가 발생한다 (브라우저 기본).
+      const handleDragOver = (event: DragEvent) => {
+        if (event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files')) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+        }
+      };
+      const handleDrop = (event: DragEvent) => {
+        const dt = event.dataTransfer;
+        if (!dt) return;
+        const imageFiles: File[] = [];
+        // dataTransfer.files 우선, 없으면 items 로 fallback (iOS Photos 등).
+        if (dt.files && dt.files.length > 0) {
+          for (let i = 0; i < dt.files.length; i++) {
+            const f = dt.files[i];
+            if (f.type.startsWith('image/')) {
+              imageFiles.push(f);
+              break;
+            }
+          }
+        } else if (dt.items) {
+          for (let i = 0; i < dt.items.length; i++) {
+            const item = dt.items[i];
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+              const f = item.getAsFile();
+              if (f) {
+                imageFiles.push(f);
+                break;
+              }
+            }
+          }
+        }
+        if (imageFiles.length === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onPasteFilesRef.current?.(imageFiles);
+      };
+      container.addEventListener('dragover', handleDragOver, true);
+      container.addEventListener('drop', handleDrop, true);
+
       // iOS soft-keyboard 한글 입력 처리.
       //
       // 진단 (public/ime-debug.html + iOS 18.7 Safari Web Inspector):
@@ -546,6 +620,9 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
         container.removeEventListener('touchmove', handleTouchMove, true);
         container.removeEventListener('touchend', handleTouchEnd, true);
         container.removeEventListener('touchcancel', handleTouchEnd, true);
+        container.removeEventListener('paste', handlePasteEvent, true);
+        container.removeEventListener('dragover', handleDragOver, true);
+        container.removeEventListener('drop', handleDrop, true);
         container.style.touchAction = previousTouchAction;
         if (debugOverlay) {
           debugOverlay.remove();
