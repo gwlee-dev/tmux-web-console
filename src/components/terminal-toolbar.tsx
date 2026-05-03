@@ -3,19 +3,49 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ChevronsDown,
+  ChevronsUp,
   ClipboardPaste,
+  Delete,
   Paperclip,
 } from 'lucide-react';
-import { useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { Toggle } from '@/components/ui/toggle';
 import { cn } from '@/lib/utils';
 
 type TerminalToolbarProps = {
   /** 현재 선택된 pane 으로 raw bytes 를 보낸다. PTY WebSocket 이 끊겼으면 false 반환. */
   onSend: (data: string) => boolean | void;
   className?: string;
+};
+
+export type TerminalToolbarHandle = {
+  /**
+   * 외부 (예: terminal-surface 의 소프트 키보드 입력) 가 PTY 로 데이터를
+   * 보내기 직전에 호출. 현재 armed 된 modifier 를 적용해 변환된 데이터를
+   * 반환하고, 사용된 modifier 는 자동으로 disarm 된다.
+   *
+   * 변환 규칙:
+   *   - alt: data 앞에 ESC (\x1b) prepend (xterm Alt 컨벤션)
+   *   - ctrl: data 가 단일 ASCII 문자면 ASCII control byte (Ctrl+a = \x01 …)
+   *   - cmd: PTY 표준 매핑 없음 — 현재는 통과
+   * 모디파이어 안 켜져 있으면 data 그대로 반환.
+   */
+  applyAndConsume: (data: string) => string;
 };
 
 type ToolKeyProps = ComponentProps<typeof Button> & {
@@ -31,8 +61,8 @@ function ToolKey({ label, hint, onPress, className, ...rest }: ToolKeyProps) {
       variant="outline"
       size="sm"
       className={cn(
-        // 가벼운 터미널 chrome — px-2.5 / h-8 / rounded-md / mono
-        'h-8 shrink-0 rounded-md px-2.5 font-mono text-xs leading-none',
+        // 가벼운 터미널 chrome — px-2.5 / h-8 / mono
+        'h-8 shrink-0 px-2.5 font-mono text-xs leading-none',
         className,
       )}
       title={hint}
@@ -46,6 +76,106 @@ function ToolKey({ label, hint, onPress, className, ...rest }: ToolKeyProps) {
       {label}
     </Button>
   );
+}
+
+type ModifierToggleProps = {
+  label: ReactNode;
+  hint: string;
+  pressed: boolean;
+  onToggle: () => void;
+};
+
+/** Modifier 키 (Ctrl / Opt / Cmd) — shadcn Toggle 의 pressed state 그대로 사용. */
+function ModifierToggle({ label, hint, pressed, onToggle }: ModifierToggleProps) {
+  return (
+    <Toggle
+      variant="outline"
+      pressed={pressed}
+      onPressedChange={onToggle}
+      title={hint}
+      aria-label={hint}
+      className="h-8 shrink-0 px-2.5 font-mono text-xs leading-none"
+      // 터미널 helper textarea focus 를 잃지 않도록 mousedown / touchstart 차단.
+      onMouseDown={(event) => event.preventDefault()}
+      onTouchStart={(event) => event.preventDefault()}
+    >
+      {label}
+    </Toggle>
+  );
+}
+
+/**
+ * Pointer 기반 long-press repeat — 즉시 1회 + 400ms 지연 후 100ms 간격 자동
+ * 연타. Pointer 떼는 모든 경로 (up / leave / cancel) 에서 정지.
+ *
+ * NewTerm / Blink Shell 의 0.4s/0.1s 패턴 그대로. Backspace / arrows / PgUp /
+ * PgDn 같이 hold 가 자연스러운 키에만 사용.
+ *
+ * `onRelease` 는 pointer 가 떨어질 때 호출 — modifier 자동 해제 등에 사용.
+ * 한 번의 hold 안에서는 modifier 가 유지되어 Ctrl+→ 연타 같은 패턴이 깨지지
+ * 않는다.
+ */
+function useRepeatPress(action: () => void, onRelease?: () => void) {
+  const actionRef = useRef(action);
+  actionRef.current = action;
+  const releaseRef = useRef(onRelease);
+  releaseRef.current = onRelease;
+  const initialRef = useRef<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
+
+  const stop = () => {
+    const wasActive = initialRef.current !== null || intervalRef.current !== null;
+    if (initialRef.current !== null) {
+      window.clearTimeout(initialRef.current);
+      initialRef.current = null;
+    }
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (wasActive) releaseRef.current?.();
+  };
+
+  useEffect(() => stop, []);
+
+  return useMemo(
+    () => ({
+      onPointerDown: (event: ReactPointerEvent) => {
+        event.preventDefault();
+        actionRef.current();
+        initialRef.current = window.setTimeout(() => {
+          initialRef.current = null;
+          intervalRef.current = window.setInterval(() => actionRef.current(), 100);
+        }, 400);
+      },
+      onPointerUp: stop,
+      onPointerLeave: stop,
+      onPointerCancel: stop,
+    }),
+    [],
+  );
+}
+
+/**
+ * 단일 데이터에 modifier 변환 적용 — terminal-surface 의 소프트 키보드 입력에서
+ * 사용. Backspace / Enter / 일반 letter 모두 같은 ESC-prefix / Ctrl-byte 규칙.
+ */
+function applyModsTransform(
+  data: string,
+  mods: { ctrl: boolean; alt: boolean; cmd: boolean },
+) {
+  if (!data || (!mods.ctrl && !mods.alt && !mods.cmd)) return data;
+  if (data.length === 1) {
+    const code = data.charCodeAt(0);
+    if (mods.ctrl && code >= 0x40 && code <= 0x7e) {
+      // ASCII letter / symbol → Ctrl byte (a→\x01, l→\x0c …)
+      return String.fromCharCode(code & 0x1f);
+    }
+  }
+  if (mods.alt) {
+    return `\x1b${data}`;
+  }
+  return data;
 }
 
 const BRACKETED_PASTE_START = '\x1b[200~';
@@ -96,11 +226,81 @@ async function uploadFiles(files: FileList | File[]): Promise<string[]> {
  * 클립보드 붙여넣기 (텍스트/이미지 자동), 일반 파일 업로드 버튼을 한 줄에
  * 노출한다. 모든 액션은 PTY 로 raw bytes 를 보낸다 (`onSend`).
  */
-export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
+export const TerminalToolbar = forwardRef<TerminalToolbarHandle, TerminalToolbarProps>(function TerminalToolbar(
+  { onSend, className },
+  ref,
+) {
   const send = (data: string) => onSend(data);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pasting, setPasting] = useState(false);
   const [uploading, setUploading] = useState(false);
+
+  // 모디파이어 토글 — armed 상태에 따라 다음 입력에 modifier 시퀀스 적용.
+  // 입력 1회 후 자동 disarm (long-press 의 경우 hold 끝나면 disarm).
+  // CSI mod code 매핑: 1 + (shift=1, alt=2, ctrl=4, meta=8).
+  const [mods, setMods] = useState({ ctrl: false, alt: false, cmd: false });
+  const modsRef = useRef(mods);
+  modsRef.current = mods;
+  const toggleMod = (k: keyof typeof mods) => setMods((m) => ({ ...m, [k]: !m[k] }));
+  const consumeMods = () => {
+    const m = modsRef.current;
+    if (m.ctrl || m.alt || m.cmd) {
+      setMods({ ctrl: false, alt: false, cmd: false });
+    }
+  };
+
+  const computeModCode = () => {
+    const m = modsRef.current;
+    let code = 1;
+    if (m.alt) code += 2;
+    if (m.ctrl) code += 4;
+    if (m.cmd) code += 8;
+    return code;
+  };
+
+  const sendArrow = (dir: 'A' | 'B' | 'C' | 'D') => {
+    const code = computeModCode();
+    send(code === 1 ? `\x1b[${dir}` : `\x1b[1;${code}${dir}`);
+  };
+  const sendPg = (n: '5' | '6') => {
+    const code = computeModCode();
+    send(code === 1 ? `\x1b[${n}~` : `\x1b[${n};${code}~`);
+  };
+  const sendBackspace = () => {
+    const m = modsRef.current;
+    // Alt/Ctrl + Backspace 는 readline / shells 에서 word delete (Ctrl+W = \x17).
+    send(m.alt || m.ctrl ? '\x17' : '\x7f');
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      applyAndConsume: (data: string) => {
+        const transformed = applyModsTransform(data, modsRef.current);
+        consumeMods();
+        return transformed;
+      },
+    }),
+    [],
+  );
+
+  // hold 가 자연스러운 키 (Backspace / arrows / paging) 에 long-press repeat.
+  // hold 중에는 modifier 유지 (Ctrl+→ 연타 보장), pointerup 에서 자동 해제.
+  const bsHandlers = useRepeatPress(() => sendBackspace(), consumeMods);
+  const arrowLeftHandlers = useRepeatPress(() => sendArrow('D'), consumeMods);
+  const arrowDownHandlers = useRepeatPress(() => sendArrow('B'), consumeMods);
+  const arrowUpHandlers = useRepeatPress(() => sendArrow('A'), consumeMods);
+  const arrowRightHandlers = useRepeatPress(() => sendArrow('C'), consumeMods);
+  const pgUpHandlers = useRepeatPress(() => sendPg('5'), consumeMods);
+  const pgDnHandlers = useRepeatPress(() => sendPg('6'), consumeMods);
+
+  // 비-repeat 키 (^B/^C/^D/Esc/Tab/paste/upload) 가 발사된 직후 modifier 자동
+  // 해제. (해제 자체에는 modifier 적용 안 됨 — ctrl/alt/cmd 시퀀스를 PTY 로
+  // 보내는 건 사용자 의도가 아닐 가능성이 큼.)
+  const sendAndConsume = (data: string) => {
+    send(data);
+    consumeMods();
+  };
 
   const sendBracketedPaste = (text: string) => {
     if (!text) return;
@@ -190,38 +390,60 @@ export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
   return (
     <div
       className={cn(
-        'flex w-full items-center gap-1 overflow-x-auto whitespace-nowrap border-t border-border/60 bg-background/80 px-2 py-1.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
+        'flex w-full items-center gap-2 overflow-x-auto whitespace-nowrap border-t border-border/60 bg-background/80 px-2 py-1.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
         className,
       )}
       role="toolbar"
       aria-label="터미널 단축 키"
     >
-      <ToolKey label="^B" hint="Ctrl+B (tmux 프리픽스)" onPress={() => send('\x02')} />
-      <ToolKey label="^C" hint="Ctrl+C (인터럽트)" onPress={() => send('\x03')} />
-      <ToolKey label="^D" hint="Ctrl+D (EOF)" onPress={() => send('\x04')} />
-      <ToolKey label="Esc" hint="Escape" onPress={() => send('\x1b')} />
-      <ToolKey label="Tab" hint="Tab" onPress={() => send('\t')} />
-      <span className="mx-1 h-5 w-px shrink-0 bg-border/60" aria-hidden />
-      <ToolKey label={<ArrowLeft className="size-3.5" />} hint="←" onPress={() => send('\x1b[D')} />
-      <ToolKey label={<ArrowDown className="size-3.5" />} hint="↓" onPress={() => send('\x1b[B')} />
-      <ToolKey label={<ArrowUp className="size-3.5" />} hint="↑" onPress={() => send('\x1b[A')} />
-      <ToolKey label={<ArrowRight className="size-3.5" />} hint="→" onPress={() => send('\x1b[C')} />
-      <span className="mx-1 h-5 w-px shrink-0 bg-border/60" aria-hidden />
-      <ToolKey label="PgUp" hint="Page Up" onPress={() => send('\x1b[5~')} />
-      <ToolKey label="PgDn" hint="Page Down" onPress={() => send('\x1b[6~')} />
-      <span className="mx-1 h-5 w-px shrink-0 bg-border/60" aria-hidden />
-      <ToolKey
-        label={<ClipboardPaste className="size-3.5" />}
-        hint="클립보드 붙여넣기 (텍스트/이미지 자동)"
-        onPress={() => void handlePaste()}
-        disabled={pasting}
-      />
-      <ToolKey
-        label={<Paperclip className="size-3.5" />}
-        hint="파일 업로드 (Claude Code 등에 경로 전달)"
-        onPress={() => fileInputRef.current?.click()}
-        disabled={uploading}
-      />
+      <ButtonGroup>
+        <ToolKey label="Esc" hint="Escape" onPress={() => sendAndConsume('\x1b')} />
+        <ToolKey label="Tab" hint="Tab" onPress={() => sendAndConsume('\t')} />
+      </ButtonGroup>
+      {/*
+        Modifier 토글 — 한번 탭하면 armed (data-state=on), 다시 탭하면 disarm.
+        다음에 누르는 키가 modifier 시퀀스로 전송된 직후 자동 disarm.
+      */}
+      <ButtonGroup>
+        <ModifierToggle label="⌃" hint="Ctrl modifier (다음 키에 적용)" pressed={mods.ctrl} onToggle={() => toggleMod('ctrl')} />
+        <ModifierToggle label="⌥" hint="Option / Alt modifier (다음 키에 적용)" pressed={mods.alt} onToggle={() => toggleMod('alt')} />
+        <ModifierToggle label="⌘" hint="Command / Meta modifier (다음 키에 적용)" pressed={mods.cmd} onToggle={() => toggleMod('cmd')} />
+      </ButtonGroup>
+      <ButtonGroup>
+        <ToolKey label={<ArrowLeft className="size-3.5" />} hint="← (홀드 = 연타)" {...arrowLeftHandlers} />
+        <ToolKey label={<ArrowDown className="size-3.5" />} hint="↓ (홀드 = 연타)" {...arrowDownHandlers} />
+        <ToolKey label={<ArrowUp className="size-3.5" />} hint="↑ (홀드 = 연타)" {...arrowUpHandlers} />
+        <ToolKey label={<ArrowRight className="size-3.5" />} hint="→ (홀드 = 연타)" {...arrowRightHandlers} />
+      </ButtonGroup>
+      <ButtonGroup>
+        <ToolKey label="^B" hint="Ctrl+B (tmux 프리픽스)" onPress={() => sendAndConsume('\x02')} />
+        <ToolKey label="^C" hint="Ctrl+C (인터럽트)" onPress={() => sendAndConsume('\x03')} />
+        <ToolKey label="^D" hint="Ctrl+D (EOF)" onPress={() => sendAndConsume('\x04')} />
+      </ButtonGroup>
+      <ButtonGroup>
+        <ToolKey label={<ChevronsUp className="size-3.5" />} hint="Page Up (홀드 = 연타)" {...pgUpHandlers} />
+        <ToolKey label={<ChevronsDown className="size-3.5" />} hint="Page Down (홀드 = 연타)" {...pgDnHandlers} />
+      </ButtonGroup>
+      <ButtonGroup>
+        <ToolKey
+          label={<ClipboardPaste className="size-3.5" />}
+          hint="클립보드 붙여넣기 (텍스트/이미지 자동)"
+          onPress={() => {
+            consumeMods();
+            void handlePaste();
+          }}
+          disabled={pasting}
+        />
+        <ToolKey
+          label={<Paperclip className="size-3.5" />}
+          hint="파일 업로드 (Claude Code 등에 경로 전달)"
+          onPress={() => {
+            consumeMods();
+            fileInputRef.current?.click();
+          }}
+          disabled={uploading}
+        />
+      </ButtonGroup>
       <input
         ref={fileInputRef}
         type="file"
@@ -231,6 +453,25 @@ export function TerminalToolbar({ onSend, className }: TerminalToolbarProps) {
         className="hidden"
         onChange={(event) => void handleFiles(event.target.files)}
       />
+      {/*
+        Sticky Backspace — toolbar 가 좌우 스크롤되어도 항상 우측 끝에 노출.
+        iOS soft keyboard 의 backspace 가 longpress 연타에서 ~20 회로 abort
+        되어 대안으로 둔다. gradient 가 wrapper 내부에 있어서 좌측 buttons 를
+        가리지 않음 — wrapper 폭 = gradient(10) + button. ml-auto 로 toolbar
+        가 비어 있을 때만 우측 끝, scroll 시엔 sticky right-0 가 발동.
+      */}
+      <div className="sticky right-0 ml-auto flex shrink-0 items-stretch self-stretch">
+        <div
+          aria-hidden
+          className="pointer-events-none w-10 shrink-0 bg-gradient-to-r from-transparent to-background"
+        />
+        <ToolKey
+          label={<Delete className="size-3.5" />}
+          hint="Backspace (홀드 = 연타)"
+          className="bg-background"
+          {...bsHandlers}
+        />
+      </div>
     </div>
   );
-}
+});
