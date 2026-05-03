@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import FastifyVite from '@fastify/vite';
 import fastifyMultipart from '@fastify/multipart';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -277,6 +278,8 @@ function createConfig(overrides = {}) {
   const cookieSecure = parseBoolean(overrides.cookieSecure ?? process.env.COOKIE_SECURE, false);
   const paneHistoryLines = parsePositiveInteger(overrides.paneHistoryLines ?? process.env.PANE_HISTORY_LINES, 200);
   const paneStreamIntervalMs = parsePositiveInteger(overrides.paneStreamIntervalMs ?? process.env.PANE_STREAM_INTERVAL_MS, 1000);
+  const httpsKeyPath = overrides.httpsKeyPath ?? process.env.HTTPS_KEY ?? '';
+  const httpsCertPath = overrides.httpsCertPath ?? process.env.HTTPS_CERT ?? '';
 
   if (!Number.isInteger(port) || port < 0) {
     throw new Error('PORT must be a non-negative integer');
@@ -295,6 +298,24 @@ function createConfig(overrides = {}) {
     throw new Error(errorMessage);
   }
 
+  // HTTPS 는 둘 다 (key + cert) 있을 때만 활성화. 한 쪽만 설정하면 명백한
+  // misconfiguration 이므로 즉시 throw.
+  if ((httpsKeyPath && !httpsCertPath) || (!httpsKeyPath && httpsCertPath)) {
+    throw new Error('HTTPS_KEY and HTTPS_CERT must be set together');
+  }
+
+  let https = null;
+  if (httpsKeyPath && httpsCertPath) {
+    try {
+      https = {
+        key: readFileSync(httpsKeyPath),
+        cert: readFileSync(httpsCertPath),
+      };
+    } catch (error) {
+      throw new Error(`Failed to read HTTPS cert/key: ${error.message}`);
+    }
+  }
+
   return {
     host,
     port,
@@ -307,6 +328,7 @@ function createConfig(overrides = {}) {
     cookieSecure,
     paneHistoryLines,
     paneStreamIntervalMs,
+    https,
   };
 }
 
@@ -321,7 +343,7 @@ export async function createApp({
   viteEnabled = true,
 } = {}) {
   const config = createConfig(configOverrides);
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, ...(config.https ? { https: config.https } : {}) });
   const activePtyConnections = new Set();
 
   app.decorate('tmuxClient', tmuxClient);
@@ -1023,7 +1045,8 @@ export async function startServer(options = {}) {
   }
   await app.listen({ port: config.port, host: config.host });
 
-  console.log(`tmux-web-console listening on http://${config.host}:${config.port}`);
+  const scheme = config.https ? 'https' : 'http';
+  console.log(`tmux-web-console listening on ${scheme}://${config.host}:${config.port}`);
   console.log(config.dev ? 'Fastify + Vite development mode is enabled.' : 'Production bundle mode is enabled.');
   console.log(`Credential login is enabled for user ${config.authUsername}.`);
   console.log(config.cookieSecure ? 'Secure cookie mode is enabled.' : 'Secure cookie mode is disabled. Enable COOKIE_SECURE=true behind HTTPS.');

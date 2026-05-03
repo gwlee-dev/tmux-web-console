@@ -13,6 +13,9 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# Local TLS cert (mkcert) — never commit
+certs/
+
 # Node
 node_modules/
 dist/
