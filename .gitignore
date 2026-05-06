@@ -38,4 +38,5 @@ e2e/**/*.png
 .claude/
 .yarn/
 state/
+data/
 

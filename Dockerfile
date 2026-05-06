@@ -60,6 +60,8 @@ COPY . .
 # picks them up for the visual regression goldens.
 RUN chmod +x scripts/install-fonts.sh && scripts/install-fonts.sh
 
+RUN npx prisma generate
+
 # Produce the production Vite bundle. Playwright's webServer boots the
 # Fastify server via `node src/server.js`, which in non-dev mode loads the
 # pre-built bundle from dist/. Without this step the server exits with

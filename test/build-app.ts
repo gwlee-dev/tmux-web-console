@@ -1,6 +1,13 @@
 import type { FastifyInstance } from "fastify";
 // @ts-expect-error -- src/server.js is native ESM JS, no .d.ts emitted.
 import { createApp } from "../src/server.js";
+import { PrismaClient } from "@prisma/client";
+import { PrismaLibSql } from "@prisma/adapter-libsql";
+import bcrypt from "bcryptjs";
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 export interface FakeTmuxOverrides {
   getTree?: () => Promise<unknown>;
@@ -21,6 +28,31 @@ export interface BuildTestAppOptions {
   configOverrides?: Record<string, unknown>;
   tmuxOverrides?: FakeTmuxOverrides;
   createAppOptions?: Record<string, unknown>;
+}
+
+/**
+ * Seed the SQLite test database with users for credential-based auth tests.
+ * Uses bcrypt cost factor 1 for speed in tests.
+ */
+async function seedTestUser(
+  dbUrl: string,
+  users: Array<{ username: string; password: string; role?: string }>
+) {
+  const adapter = new PrismaLibSql({ url: dbUrl });
+  const prisma = new PrismaClient({ adapter });
+  try {
+    await prisma.$connect();
+    for (const u of users) {
+      const passwordHash = await bcrypt.hash(u.password, 1); // low rounds for speed
+      await prisma.user.upsert({
+        where: { username: u.username },
+        update: {},
+        create: { username: u.username, passwordHash, role: u.role ?? "admin" }
+      });
+    }
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 /**
@@ -66,7 +98,7 @@ export function makeFakeTmux(overrides: FakeTmuxOverrides = {}) {
     ) {
       return {
         targetPane,
-        content: "[32mline one[0m\nline two",
+        content: "\x1b[32mline one\x1b[0m\nline two",
         lineCount: 2,
         historyLines,
         capturedAt: "2026-04-21T03:00:00.000Z",
@@ -122,12 +154,46 @@ export function makeFakeTmux(overrides: FakeTmuxOverrides = {}) {
 /**
  * Build a Fastify app wired to a fake tmux client. Mirrors `buildTestApp`
  * from the original test/server.test.js node:test suite.
+ *
+ * Creates an isolated SQLite database for each call so tests don't share
+ * state. The DB is migrated and seeded with auth credentials derived from
+ * `configOverrides.authUsername` / `configOverrides.authPassword` (or the
+ * defaults "admin" / "secret-pass") so credential-based auth tests continue
+ * to work after the auth system moved to DB-backed verification.
  */
 export async function buildTestApp(
   options: BuildTestAppOptions = {}
 ): Promise<FastifyInstance> {
   const { configOverrides = {}, tmuxOverrides = {}, createAppOptions = {} } = options;
   const fakeTmux = makeFakeTmux(tmuxOverrides);
+
+  // Create a unique temp SQLite DB path for this test run.
+  const testDbPath = path.join(
+    os.tmpdir(),
+    `tmux-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+  );
+  const testDbUrl = `file:${testDbPath}`;
+
+  // Set DATABASE_URL *before* createApp() so the db plugin picks it up.
+  process.env.DATABASE_URL = testDbUrl;
+
+  // Run Prisma migrations against the fresh temp DB.
+  execSync("npx prisma migrate deploy", {
+    cwd: "/Users/gwlee/Repositories/tmux-web-console",
+    env: { ...process.env, DATABASE_URL: testDbUrl },
+    stdio: "pipe"
+  });
+
+  // Backward-compat shim: seed the credentials the tests use for login.
+  // After the auth rewrite, the DB is the source of truth — config values for
+  // authUsername/authPassword are ignored at login time.
+  const authUser =
+    (configOverrides.authUsername as string | undefined) ?? "admin";
+  const authPass =
+    (configOverrides.authPassword as string | undefined) ?? "secret-pass";
+  await seedTestUser(testDbUrl, [
+    { username: authUser, password: authPass, role: "admin" }
+  ]);
 
   const { app } = await createApp({
     tmuxClient: fakeTmux,
@@ -145,7 +211,22 @@ export async function buildTestApp(
     }
   });
 
-  return app as FastifyInstance;
+  const fastifyApp = app as FastifyInstance;
+
+  // Clean up the temp DB files when the app closes (called in afterEach).
+  fastifyApp.addHook("onClose", async () => {
+    try {
+      fs.unlinkSync(testDbPath);
+    } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(`${testDbPath}-wal`);
+    } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(`${testDbPath}-shm`);
+    } catch { /* ignore */ }
+  });
+
+  return fastifyApp;
 }
 
 /**
