@@ -17,6 +17,18 @@ const UPLOAD_TOTAL_LIMIT_BYTES = 50 * 1024 * 1024;   // 50 MB per request
 const UPLOAD_TTL_MS = 60 * 60 * 1000;                // 1 hour
 const SAFE_FILENAME_RE = /[^A-Za-z0-9._-]+/g;
 
+const USER_SETTING_KEYS = ['terminalFontSize', 'theme', 'debugMode', 'scrollSensitivity']
+const SYSTEM_SETTING_KEYS = ['sessionTimeoutSeconds', 'paneHistoryLines', 'paneStreamIntervalMs']
+const SETTING_DEFAULTS = {
+  terminalFontSize: '14',
+  theme: 'system',
+  debugMode: 'false',
+  scrollSensitivity: '5',
+  sessionTimeoutSeconds: '28800',
+  paneHistoryLines: '200',
+  paneStreamIntervalMs: '1000',
+}
+
 function sanitizeUploadFilename(raw) {
   const base = path.basename(raw || 'upload');
   const cleaned = base
@@ -145,12 +157,14 @@ function safeStringEqual(left, right) {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function buildSessionCookie(username, config) {
+function buildSessionCookie(user, config) {
   const payload = Buffer.from(
     JSON.stringify({
-      sub: username,
+      sub: user.username,
+      uid: user.uid,
+      role: user.role,
       exp: Math.floor(Date.now() / 1000) + config.sessionTtlSeconds,
-      nonce: randomBytes(8).toString('hex'),
+      nonce: randomBytes(16).toString('hex'),
     }),
   ).toString('base64url');
   const signature = signValue(payload, config.sessionSecret);
@@ -186,16 +200,21 @@ function readAuthenticatedUser(request, config) {
       return null;
     }
 
-    return decoded.sub;
+    // Old cookies without uid field force re-login
+    if (!decoded.uid) {
+      return null;
+    }
+
+    return { username: decoded.sub, uid: decoded.uid, role: decoded.role };
   } catch {
     return null;
   }
 }
 
-function setSessionCookie(reply, username, config) {
+function setSessionCookie(reply, user, config) {
   reply.header(
     'set-cookie',
-    serializeCookie(SESSION_COOKIE_NAME, buildSessionCookie(username, config), {
+    serializeCookie(SESSION_COOKIE_NAME, buildSessionCookie(user, config), {
       path: '/',
       maxAge: config.sessionTtlSeconds,
       httpOnly: true,
@@ -216,6 +235,15 @@ function clearSessionCookie(reply, config) {
       secure: config.cookieSecure,
     }),
   );
+}
+
+function csrfGuard(request, reply, done) {
+  const secFetch = request.headers['sec-fetch-site'];
+  // absent = same-origin request from non-supporting browser → allow
+  if (secFetch && secFetch !== 'same-origin' && secFetch !== 'none') {
+    return reply.code(403).send({ error: 'CSRF check failed' });
+  }
+  done();
 }
 
 async function readJsonBody(request) {
@@ -289,13 +317,8 @@ function createConfig(overrides = {}) {
     throw new Error('SESSION_TTL_SECONDS must be a positive integer');
   }
 
-  if (!authUsername || !authPassword || !sessionSecret) {
-    const errorMessage = 'AUTH_USERNAME, AUTH_PASSWORD, and SESSION_SECRET are required';
-    if (!isLocalHost(host)) {
-      throw new Error(errorMessage);
-    }
-
-    throw new Error(errorMessage);
+  if (!sessionSecret) {
+    throw new Error('SESSION_SECRET is required');
   }
 
   // HTTPS 는 둘 다 (key + cert) 있을 때만 활성화. 한 쪽만 설정하면 명백한
@@ -349,6 +372,8 @@ export async function createApp({
   app.decorate('tmuxClient', tmuxClient);
   app.decorate('runtimeConfig', config);
 
+  await app.register((await import('./plugins/db.js')).default);
+
   // Register Swagger before any routes so `onRoute` collects every schema.
   await app.register(swaggerPlugin);
 
@@ -376,7 +401,12 @@ export async function createApp({
       return reply;
     }
 
-    if (request.url === '/api/health' || request.url === '/api/login') {
+    if (
+      request.url === '/api/health' ||
+      request.url === '/api/login' ||
+      request.url === '/api/setup/status' ||
+      request.url === '/api/setup'
+    ) {
       return;
     }
 
@@ -384,13 +414,13 @@ export async function createApp({
       return;
     }
 
-    const username = readAuthenticatedUser(request, config);
-    if (!username) {
+    const user = readAuthenticatedUser(request, config);
+    if (!user) {
       reply.code(401).send({ error: '로그인이 필요합니다.' });
       return reply;
     }
 
-    request.authenticatedUser = username;
+    request.authenticatedUser = user;
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -404,8 +434,8 @@ export async function createApp({
       return;
     }
 
-    const username = readAuthenticatedUser({ headers: request.headers }, config);
-    if (!username) {
+    const user = readAuthenticatedUser({ headers: request.headers }, config);
+    if (!user) {
       rejectWebSocketUpgrade(socket, 401, '로그인이 필요합니다.');
       return;
     }
@@ -536,6 +566,58 @@ export async function createApp({
     }),
   );
 
+  app.get('/api/setup/status', {
+    schema: {
+      tags: ['setup'],
+      summary: 'Check if initial setup is required',
+      response: {
+        200: {
+          type: 'object',
+          properties: { needsSetup: { type: 'boolean' } },
+        },
+      },
+    },
+  }, async (request) => {
+    const count = await request.server.db.user.count();
+    return { needsSetup: count === 0 };
+  });
+
+  app.post('/api/setup', {
+    schema: {
+      tags: ['setup'],
+      summary: 'Create the first admin user (only works when no users exist)',
+      body: {
+        type: 'object',
+        required: ['username', 'password'],
+        properties: {
+          username: { type: 'string', minLength: 2, maxLength: 64 },
+          password: { type: 'string', minLength: 8 },
+          displayName: { type: 'string', maxLength: 128 },
+        },
+      },
+      response: {
+        201: {
+          type: 'object',
+          properties: {
+            user: { type: 'object', properties: { username: { type: 'string' } } },
+          },
+        },
+        409: { type: 'object', properties: { error: { type: 'string' } } },
+      },
+    },
+  }, async (request, reply) => {
+    const { username, password, displayName } = request.body;
+    const count = await request.server.db.user.count();
+    if (count > 0) return reply.code(409).send({ error: 'Setup already completed' });
+    const { default: bcrypt } = await import('bcryptjs');
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = await request.server.db.user.create({
+      data: { username, passwordHash, displayName: displayName || null, role: 'admin' },
+    });
+    setSessionCookie(reply, { username: user.username, uid: user.id, role: user.role }, config);
+    return reply.code(201).send({ user: { username: user.username } });
+  });
+
   app.post('/api/login', {
     schema: {
       tags: ['Auth'],
@@ -552,10 +634,9 @@ export async function createApp({
         200: {
           type: 'object',
           properties: {
-            ok: { type: 'boolean' },
             user: {
               type: 'object',
-              properties: { username: { type: 'string' } },
+              properties: { username: { type: 'string' }, role: { type: 'string' } },
             },
           },
         },
@@ -570,22 +651,17 @@ export async function createApp({
     const username = validateRequiredString(body.username, 'username');
     const password = validateRequiredString(body.password, 'password');
 
-    const isUsernameValid = safeStringEqual(username, config.authUsername);
-    const isPasswordValid = safeStringEqual(password, config.authPassword);
-
-    if (!isUsernameValid || !isPasswordValid) {
-      const error = new Error('아이디 또는 비밀번호가 올바르지 않습니다.');
-      error.statusCode = 401;
-      throw error;
+    const { default: bcrypt } = await import('bcryptjs');
+    const user = await request.server.db.user.findUnique({ where: { username } });
+    if (!user || !user.passwordHash) {
+      return reply.code(401).send({ error: 'Invalid credentials' });
     }
-
-    setSessionCookie(reply, config.authUsername, config);
-    return {
-      ok: true,
-      user: {
-        username: config.authUsername,
-      },
-    };
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      return reply.code(401).send({ error: 'Invalid credentials' });
+    }
+    setSessionCookie(reply, { username: user.username, uid: user.id, role: user.role }, config);
+    return reply.send({ user: { username: user.username, role: user.role } });
   });
 
   app.post('/api/logout', {
@@ -599,6 +675,7 @@ export async function createApp({
         },
       },
     },
+    preHandler: csrfGuard,
   }, async (_request, reply) => {
     clearSessionCookie(reply, config);
     return { ok: true };
@@ -612,10 +689,14 @@ export async function createApp({
         200: {
           type: 'object',
           properties: {
-            authenticated: { type: 'boolean' },
             user: {
               type: 'object',
-              properties: { username: { type: 'string' } },
+              properties: {
+                username: { type: 'string' },
+                role: { type: 'string' },
+                displayName: { type: 'string' },
+                avatarUrl: { type: 'string' },
+              },
             },
           },
         },
@@ -625,12 +706,13 @@ export async function createApp({
         },
       },
     },
-  }, async (request) => ({
-    authenticated: true,
-    user: {
-      username: request.authenticatedUser,
-    },
-  }));
+  }, async (request, reply) => {
+    const dbUser = await request.server.db.user.findUnique({
+      where: { username: request.authenticatedUser.username },
+    });
+    if (!dbUser) return reply.code(401).send({ error: 'User not found' });
+    return { user: { username: dbUser.username, role: dbUser.role, displayName: dbUser.displayName, avatarUrl: dbUser.avatarUrl } };
+  });
 
   app.get('/api/tree', {
     schema: {
@@ -957,7 +1039,7 @@ export async function createApp({
       throw error;
     }
 
-    const username = request.authenticatedUser;
+    const username = request.authenticatedUser.username;
     const userDir = uploadUserDir(username);
     await mkdir(userDir, { recursive: true });
     // lazy TTL cleanup of this user's directory.
@@ -1017,6 +1099,152 @@ export async function createApp({
     return { paths };
   });
 
+  app.get('/api/settings', {
+    schema: {
+      tags: ['settings'],
+      summary: 'Get current user and system settings',
+      response: {
+        200: { type: 'object', properties: { settings: { type: 'object', additionalProperties: { type: 'string' } } } },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.authenticatedUser  // { username, uid, role }
+    const userSettings = await request.server.db.userSetting.findMany({
+      where: { userId: user.uid },
+    })
+    const result = { ...SETTING_DEFAULTS }
+    for (const s of userSettings) {
+      result[s.key] = s.value
+    }
+    if (user.role === 'admin') {
+      const sysSettings = await request.server.db.systemSetting.findMany()
+      for (const s of sysSettings) {
+        result[s.key] = s.value
+      }
+    }
+    return { settings: result }
+  });
+
+  app.patch('/api/settings', {
+    schema: {
+      tags: ['settings'],
+      summary: 'Update settings',
+      body: {
+        type: 'object',
+        properties: {
+          settings: { type: 'object', additionalProperties: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.authenticatedUser
+    const { settings } = request.body
+    if (!settings || typeof settings !== 'object') {
+      return reply.code(400).send({ error: 'settings object required' })
+    }
+    for (const [key, value] of Object.entries(settings)) {
+      if (USER_SETTING_KEYS.includes(key)) {
+        await request.server.db.userSetting.upsert({
+          where: { userId_key: { userId: user.uid, key } },
+          update: { value: String(value), updatedAt: new Date() },
+          create: { userId: user.uid, key, value: String(value) },
+        })
+      } else if (SYSTEM_SETTING_KEYS.includes(key)) {
+        if (user.role !== 'admin') {
+          return reply.code(403).send({ error: `Setting "${key}" requires admin role` })
+        }
+        await request.server.db.systemSetting.upsert({
+          where: { key },
+          update: { value: String(value), updatedAt: new Date() },
+          create: { key, value: String(value) },
+        })
+      } else {
+        return reply.code(400).send({ error: `Unknown setting key: "${key}"` })
+      }
+    }
+    return reply.send({ message: 'Settings updated' })
+  });
+
+  app.patch('/api/users/me', {
+    schema: {
+      tags: ['users'],
+      summary: 'Update current user profile',
+      body: {
+        type: 'object',
+        properties: {
+          displayName: { type: 'string', maxLength: 128 },
+          email: { type: 'string', maxLength: 256 },
+          avatarUrl: { type: 'string', maxLength: 512 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.authenticatedUser
+    const { displayName, email, avatarUrl } = request.body
+    const updated = await request.server.db.user.update({
+      where: { id: user.uid },
+      data: {
+        ...(displayName !== undefined && { displayName }),
+        ...(email !== undefined && { email }),
+        ...(avatarUrl !== undefined && { avatarUrl }),
+      },
+      select: { username: true, displayName: true, email: true, avatarUrl: true, role: true },
+    })
+    return { user: updated }
+  });
+
+  app.patch('/api/users/me/password', {
+    schema: {
+      tags: ['users'],
+      summary: 'Change current user password',
+      body: {
+        type: 'object',
+        required: ['currentPassword', 'newPassword'],
+        properties: {
+          currentPassword: { type: 'string' },
+          newPassword: { type: 'string', minLength: 8 },
+          newPasswordConfirm: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { currentPassword, newPassword, newPasswordConfirm } = request.body
+    if (newPasswordConfirm && newPassword !== newPasswordConfirm) {
+      return reply.code(400).send({ error: '새 비밀번호가 일치하지 않습니다' })
+    }
+    const user = request.authenticatedUser
+    const dbUser = await request.server.db.user.findUnique({ where: { id: user.uid } })
+    if (!dbUser || !dbUser.passwordHash) return reply.code(401).send({ error: 'Cannot change password' })
+    const { default: bcrypt } = await import('bcryptjs')
+    const valid = await bcrypt.compare(currentPassword, dbUser.passwordHash)
+    if (!valid) return reply.code(401).send({ error: '현재 비밀번호가 올바르지 않습니다' })
+    const passwordHash = await bcrypt.hash(newPassword, 12)
+    await request.server.db.user.update({ where: { id: user.uid }, data: { passwordHash } })
+    return { message: '비밀번호가 변경되었습니다' }
+  });
+
+  app.delete('/api/users/me', {
+    schema: {
+      tags: ['users'],
+      summary: 'Delete own account',
+      response: {
+        204: { type: 'null' },
+        403: { type: 'object', properties: { error: { type: 'string' } } },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.authenticatedUser
+    if (user.role === 'admin') {
+      const adminCount = await request.server.db.user.count({ where: { role: 'admin' } })
+      if (adminCount <= 1) {
+        return reply.code(403).send({ error: '마지막 관리자 계정은 삭제할 수 없습니다' })
+      }
+    }
+    await request.server.db.user.delete({ where: { id: user.uid } })
+    clearSessionCookie(reply, config)
+    return reply.code(204).send()
+  });
+
   app.setNotFoundHandler(async (request, reply) => {
     if (request.url.startsWith('/api/')) {
       reply.code(404).send({ error: 'Not found' });
@@ -1033,6 +1261,23 @@ export async function createApp({
   return { app, config, viteEnabled };
 }
 
+async function bootstrapAuth(app) {
+  const userCount = await app.db.user.count();
+  const envUser = process.env.AUTH_USERNAME;
+  const envPass = process.env.AUTH_PASSWORD;
+
+  if (envUser && envPass && userCount === 0) {
+    const { default: bcrypt } = await import('bcryptjs');
+    const passwordHash = await bcrypt.hash(envPass, 12);
+    await app.db.user.create({
+      data: { username: envUser, passwordHash, role: 'admin' },
+    });
+    console.log(`[setup] Seeded admin user "${envUser}" from env vars. IMPORTANT: Remove AUTH_USERNAME/AUTH_PASSWORD from environment and manage users via the UI.`);
+  } else if (envUser && userCount > 0) {
+    console.warn('[setup] AUTH_USERNAME env is set but users already exist — env credentials are IGNORED. Manage users via the UI.');
+  }
+}
+
 export async function startServer(options = {}) {
   const { app, config, viteEnabled } = await createApp(options);
   if (viteEnabled) {
@@ -1044,11 +1289,11 @@ export async function startServer(options = {}) {
     await app.vite.ready();
   }
   await app.listen({ port: config.port, host: config.host });
+  await bootstrapAuth(app);
 
   const scheme = config.https ? 'https' : 'http';
   console.log(`tmux-web-console listening on ${scheme}://${config.host}:${config.port}`);
   console.log(config.dev ? 'Fastify + Vite development mode is enabled.' : 'Production bundle mode is enabled.');
-  console.log(`Credential login is enabled for user ${config.authUsername}.`);
   console.log(config.cookieSecure ? 'Secure cookie mode is enabled.' : 'Secure cookie mode is disabled. Enable COOKIE_SECURE=true behind HTTPS.');
   console.log(`Live pane capture keeps ${config.paneHistoryLines} lines with a ${config.paneStreamIntervalMs}ms refresh interval.`);
 

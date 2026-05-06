@@ -63,7 +63,7 @@ describe("auth routes", () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json()).toEqual({
-      error: "아이디 또는 비밀번호가 올바르지 않습니다."
+      error: "Invalid credentials"
     });
   });
 

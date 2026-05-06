@@ -4,16 +4,12 @@ import {
   ArrowUp,
   LoaderCircle,
   LogIn,
-  LogOut,
   Bug,
   TextCursorInput,
-  Moon,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
   SendHorizontal,
-  Sun,
   SquareTerminal,
   Trash2,
   X,
@@ -21,7 +17,6 @@ import {
 
 import { TerminalSurface, type TerminalSurfaceHandle } from '@/components/terminal-surface';
 import { TerminalToolbar, type TerminalToolbarHandle } from '@/components/terminal-toolbar';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -34,13 +29,16 @@ import {
   ResponsiveDialogTitle,
 } from '@/components/ui/responsive-dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarInput, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarSeparator, SidebarTrigger } from '@/components/ui/sidebar';
+import { SidebarGroup, SidebarGroupContent, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { Toaster } from '@/components/ui/sonner';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
+import { SetupWizard } from '@/components/setup-wizard';
+import { AppSidebar } from '@/components/app-sidebar';
+import { SettingsPage } from '@/components/pages/settings-page';
+import { AccountPage } from '@/components/pages/account-page';
 
 type LiveConnectionState = 'idle' | 'connecting' | 'live' | 'error';
 type AppError = Error & { statusCode?: number };
@@ -59,6 +57,9 @@ type AuthMeResponse = {
   authenticated: true;
   user: {
     username: string;
+    role: 'user' | 'admin';
+    displayName?: string;
+    avatarUrl?: string;
   };
 };
 
@@ -114,9 +115,12 @@ type PtySocketMessage =
   | { type: 'error'; error?: string };
 
 type AppRoute =
-  | { kind: 'login' }
-  | { kind: 'home' }
-  | { kind: 'pane'; sessionName: string; paneId: string };
+  | { type: 'login' }
+  | { type: 'setup' }
+  | { type: 'home' }
+  | { type: 'pane'; sessionName: string; paneId: string }
+  | { type: 'settings' }
+  | { type: 'account' };
 
 type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedThemeMode = 'light' | 'dark';
@@ -182,19 +186,31 @@ function parseResponse<T>(response: Response) {
 
 function parseRoute(pathname: string): AppRoute {
   if (pathname === '/login') {
-    return { kind: 'login' };
+    return { type: 'login' };
+  }
+
+  if (pathname === '/setup') {
+    return { type: 'setup' };
+  }
+
+  if (pathname === '/settings') {
+    return { type: 'settings' };
+  }
+
+  if (pathname === '/account') {
+    return { type: 'account' };
   }
 
   const paneMatch = pathname.match(/^\/sessions\/([^/]+)\/panes\/([^/]+)$/);
   if (paneMatch) {
     return {
-      kind: 'pane',
+      type: 'pane',
       sessionName: decodeURIComponent(paneMatch[1]),
       paneId: decodeURIComponent(paneMatch[2]),
     };
   }
 
-  return { kind: 'home' };
+  return { type: 'home' };
 }
 
 function buildPanePath(sessionName: string, paneId: string) {
@@ -288,6 +304,14 @@ function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
   const [viewportHeight, setViewportHeight] = useState(() => window.visualViewport?.height ?? window.innerHeight);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [fullUserData, setFullUserData] = useState<{
+    username: string;
+    role: 'user' | 'admin';
+    displayName?: string;
+    avatarUrl?: string;
+    email?: string;
+    githubUsername?: string;
+  } | null>(null);
   const [sessions, setSessions] = useState<SessionNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -346,6 +370,9 @@ function App() {
       return [];
     }
   });
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [userRole, setUserRole] = useState<'user' | 'admin'>('user');
+  const [activeNav, setActiveNav] = useState<'sessions' | 'recent'>('sessions');
 
   const pendingResizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef('');
@@ -358,7 +385,6 @@ function App() {
   const route = useMemo(() => parseRoute(pathname), [pathname]);
   const resolvedThemeMode: ResolvedThemeMode = themePreference === 'system' ? (systemPrefersDark ? 'dark' : 'light') : themePreference;
   const isDark = resolvedThemeMode === 'dark';
-  const themeIcon = resolvedThemeMode === 'dark' ? Moon : Sun;
   const terminalShellClassName =
     resolvedThemeMode === 'dark'
       ? 'bg-[#050816] text-slate-100'
@@ -437,10 +463,6 @@ function App() {
     setRecentSessionNames((current) => [name, ...current.filter((entry) => entry !== name)].slice(0, 6));
   }, []);
 
-  const setTheme = useCallback((nextTheme: ThemePreference) => {
-    setThemePreference(nextTheme);
-  }, []);
-
   const apiRequest = useCallback(async <T,>(path: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has('content-type')) {
@@ -482,6 +504,13 @@ function App() {
       );
 
       setCurrentUser(authPayload.user.username);
+      setUserRole(authPayload.user.role ?? 'user');
+      setFullUserData({
+        username: authPayload.user.username,
+        role: authPayload.user.role ?? 'user',
+        displayName: authPayload.user.displayName,
+        avatarUrl: authPayload.user.avatarUrl,
+      });
       setSessions(treePayload.sessions);
     } catch (error) {
       const message = summarizeError(error);
@@ -489,6 +518,7 @@ function App() {
 
       if (statusCode === 401) {
         setCurrentUser(null);
+        setFullUserData(null);
         setSessions([]);
         setSelectedPaneId(null);
         setPtyState('idle');
@@ -505,19 +535,41 @@ function App() {
   }, [refreshData]);
 
   useEffect(() => {
+    const checkSetup = async () => {
+      try {
+        const setupRes = await fetch('/api/setup/status');
+        if (setupRes.ok) {
+          const setupData = await setupRes.json() as { needsSetup: boolean };
+          setNeedsSetup(setupData.needsSetup);
+          if (setupData.needsSetup) {
+            navigate('/setup', true);
+            return;
+          }
+        } else {
+          setNeedsSetup(false);
+        }
+      } catch (e) {
+        // setup check failed, proceed normally
+        setNeedsSetup(false);
+      }
+    };
+    void checkSetup();
+  }, [navigate]);
+
+  useEffect(() => {
     if (loading) {
       return;
     }
 
-    if (!currentUser && route.kind !== 'login') {
+    if (!currentUser && route.type !== 'login') {
       navigate('/login', true);
       return;
     }
 
-    if (currentUser && route.kind === 'login') {
+    if (currentUser && route.type === 'login') {
       navigate('/', true);
     }
-  }, [currentUser, loading, navigate, route.kind]);
+  }, [currentUser, loading, navigate, route.type]);
 
   const selectedPaneMeta = useMemo<SelectedPaneMeta | null>(() => {
     if (!selectedPaneId) {
@@ -551,7 +603,7 @@ function App() {
       return;
     }
 
-    if (route.kind === 'pane') {
+    if (route.type === 'pane') {
       const routePaneExists = sessions.some((session) =>
         session.name === route.sessionName && session.windows.some((windowNode) => windowNode.panes.some((pane) => pane.id === route.paneId)),
       );
@@ -564,7 +616,7 @@ function App() {
       }
     }
 
-    if (route.kind === 'home') {
+    if (route.type === 'home') {
       setSelectedPaneId(null);
     }
   }, [currentUser, route, selectedPaneId, sessions]);
@@ -827,7 +879,7 @@ function App() {
   }, [searchQuery]);
 
   const selectedSessionNode = useMemo(() => {
-    const sessionName = selectedPaneMeta?.sessionName ?? (route.kind === 'pane' ? route.sessionName : null);
+    const sessionName = selectedPaneMeta?.sessionName ?? (route.type === 'pane' ? route.sessionName : null);
     if (!sessionName) {
       return null;
     }
@@ -918,6 +970,7 @@ function App() {
       ptySocketRef.current?.close();
       ptySocketRef.current = null;
       setCurrentUser(null);
+      setFullUserData(null);
       setSessions([]);
       setSelectedPaneId(null);
       setPtyState('idle');
@@ -1095,7 +1148,103 @@ function App() {
     }
   };
 
-  const liveVariant = ptyState === 'error' ? 'destructive' : ptyState === 'live' ? 'default' : 'secondary';
+  const sessionsContent = (
+    <SidebarGroup>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {filteredSessions.length === 0 ? (
+            <SidebarMenuItem>
+              <div className="px-2 py-3 text-sm text-muted-foreground">
+                {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
+              </div>
+            </SidebarMenuItem>
+          ) : (
+            filteredSessions.map((session) => {
+              const selected = selectedSessionNode?.id === session.id;
+              return (
+                <SidebarMenuItem key={session.id}>
+                  <div
+                    className="relative"
+                    onMouseEnter={() => setHoveredSessionId(session.id)}
+                    onMouseLeave={() => setHoveredSessionId((current) => (current === session.id ? null : current))}
+                  >
+                    <SidebarMenuButton
+                      asChild
+                      isActive={selected}
+                      className={[
+                        'h-auto min-w-0 items-start py-3',
+                        hoveredSessionId === session.id ? 'pr-20' : '',
+                      ].join(' ')}
+                    >
+                      <button type="button" onClick={() => selectSession(session.name)}>
+                        <div className="truncate text-sm font-medium">{session.name}</div>
+                      </button>
+                    </SidebarMenuButton>
+                    {hoveredSessionId === session.id ? (
+                      <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1">
+                        <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openRenameSessionDialog(session.name); }}>
+                          <Pencil className="size-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSessionToKill(session.name); setSessionKillDialogOpen(true); }}>
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                </SidebarMenuItem>
+              );
+            })
+          )}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+
+  const recentContent = (
+    <SidebarGroup>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {recentSessions.length === 0 ? (
+            <SidebarMenuItem>
+              <div className="px-2 py-3 text-sm text-muted-foreground">최근 세션이 없습니다.</div>
+            </SidebarMenuItem>
+          ) : (
+            recentSessions.map((session) => {
+              const selected = selectedSessionNode?.id === session.id;
+              return (
+                <SidebarMenuItem key={session.id}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={selected}
+                    className="h-auto min-w-0 items-start py-3"
+                  >
+                    <button type="button" onClick={() => selectSession(session.name)}>
+                      <div className="truncate text-sm font-medium">{session.name}</div>
+                    </button>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })
+          )}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+
+  if (needsSetup === null) {
+    // Still loading setup status — show minimal loading state
+    return null;
+  }
+
+  if (needsSetup) {
+    return (
+      <SetupWizard onComplete={() => {
+        setNeedsSetup(false);
+        void refreshData();
+        navigate('/', true);
+      }} />
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -1171,110 +1320,23 @@ function App() {
     <SidebarProvider
       defaultOpen
       className={isDark ? 'dark h-dvh min-h-0 overflow-hidden bg-background text-foreground' : 'h-dvh min-h-0 overflow-hidden bg-background text-foreground'}
-      style={{ height: `${viewportHeight}px`, minHeight: `${viewportHeight}px` }}
+      style={{ '--sidebar-width': '350px', '--sidebar-width-icon': '3rem', height: `${viewportHeight}px`, minHeight: `${viewportHeight}px` } as React.CSSProperties}
     >
-      <Sidebar variant="inset" collapsible="icon">
-            <SidebarHeader>
-              <div className="flex items-center gap-2">
-                <SidebarTrigger />
-                <button type="button" onClick={() => navigate('/')} className="min-w-0 flex-1 truncate text-left text-sm font-semibold hover:underline">
-                  tmux 웹 콘솔
-                </button>
-                <Button variant="outline" size="icon" onClick={openSessionDialog}>
-                  <Plus className="size-4" />
-                </Button>
-              </div>
-              <div className="px-2 text-xs text-muted-foreground">{currentUser}</div>
-              <SidebarInput value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="세션 검색" />
-            </SidebarHeader>
-
-            <SidebarContent>
-              <SidebarGroup>
-                <SidebarGroupLabel>세션 목록</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {filteredSessions.length === 0 ? (
-                      <SidebarMenuItem>
-                        <div className="px-2 py-3 text-sm text-muted-foreground">
-                          {treeQuery.trim() ? '검색 결과가 없습니다.' : '세션이 없습니다.'}
-                        </div>
-                      </SidebarMenuItem>
-                    ) : (
-                      filteredSessions.map((session) => {
-                        const selected = selectedSessionNode?.id === session.id
-                        return (
-                          <SidebarMenuItem key={session.id}>
-                            <div
-                              className="relative"
-                              onMouseEnter={() => setHoveredSessionId(session.id)}
-                              onMouseLeave={() => setHoveredSessionId((current) => (current === session.id ? null : current))}
-                            >
-                              <SidebarMenuButton
-                                asChild
-                                isActive={selected}
-                                className={[
-                                  'h-auto min-w-0 items-start py-3',
-                                  hoveredSessionId === session.id ? 'pr-20' : '',
-                                ].join(' ')}
-                              >
-                                <button type="button" onClick={() => selectSession(session.name)}>
-                                  <div className="truncate text-sm font-medium">{session.name}</div>
-                                </button>
-                              </SidebarMenuButton>
-                              {hoveredSessionId === session.id ? (
-                                <div className="absolute right-2 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1">
-                                  <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openRenameSessionDialog(session.name); }}>
-                                    <Pencil className="size-4" />
-                                  </Button>
-                                  <Button variant="ghost" size="icon" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setSessionToKill(session.name); setSessionKillDialogOpen(true); }}>
-                                    <Trash2 className="size-4" />
-                                  </Button>
-                                </div>
-                              ) : null}
-                            </div>
-                          </SidebarMenuItem>
-                        )
-                      })
-                    )}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            </SidebarContent>
-
-            <SidebarSeparator />
-            <SidebarFooter>
-              <div className="flex items-center gap-2 px-2">
-                <Badge variant={liveVariant}>{ptyState === 'live' ? 'PTY 연결 중' : ptyState === 'connecting' ? '연결 중' : ptyState === 'error' ? '연결 오류' : '대기 중'}</Badge>
-              </div>
-              <div className="flex items-center gap-2 px-2">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="icon">
-                      {themeIcon === Moon ? <Moon className="size-4" /> : <Sun className="size-4" />}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => setTheme('system')}>
-                      {systemPrefersDark ? <Moon className="size-4" /> : <Sun className="size-4" />} 시스템
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setTheme('light')}>
-                      <Sun className="size-4" /> 라이트
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setTheme('dark')}>
-                      <Moon className="size-4" /> 다크
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <Button variant="outline" size="icon" onClick={() => void refreshData()} disabled={loading}>
-                  {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                </Button>
-                <Button variant="outline" size="icon" onClick={() => void logout()} disabled={busyKey === 'logout'}>
-                  {busyKey === 'logout' ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut className="size-4" />}
-                </Button>
-              </div>
-            </SidebarFooter>
-            <SidebarRail />
-          </Sidebar>
+      <AppSidebar
+          username={currentUser ?? ''}
+          displayName={fullUserData?.displayName}
+          avatarUrl={fullUserData?.avatarUrl}
+          role={userRole}
+          activeNav={activeNav}
+          searchQuery={treeQuery}
+          onNavChange={setActiveNav}
+          onSearchChange={setTreeQuery}
+          onSettings={() => navigate('/settings')}
+          onAccount={() => navigate('/account')}
+          onLogout={() => void logout()}
+        >
+          {activeNav === 'sessions' ? sessionsContent : recentContent}
+        </AppSidebar>
 
           <SidebarInset>
             <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 md:hidden">
@@ -1293,11 +1355,11 @@ function App() {
                   <Bug className="size-4" />
                 </Button>
               ) : null}
-              {route.kind === 'home' ? (
+              {route.type === 'home' ? (
                 <Button variant="outline" size="icon" onClick={openSessionDialog}>
                   <Plus className="size-4" />
                 </Button>
-              ) : (
+              ) : route.type === 'pane' ? (
                 <>
                   <Button variant={mobileSearchBarOpen ? 'default' : 'outline'} size="icon" onClick={() => setMobileSearchBarOpen((open) => !open)}>
                     <Search className="size-4" />
@@ -1311,9 +1373,28 @@ function App() {
                     </Button>
                   ) : null}
                 </>
-              )}
+              ) : null}
             </div>
-            {route.kind === 'home' ? (
+            {route.type === 'settings' ? (
+              <SettingsPage
+                isAdmin={userRole === 'admin'}
+                onThemeChange={(theme) => setThemePreference(theme)}
+              />
+            ) : route.type === 'account' ? (
+              <AccountPage
+                user={{
+                  username: currentUser ?? '',
+                  displayName: fullUserData?.displayName,
+                  email: fullUserData?.email,
+                  avatarUrl: fullUserData?.avatarUrl,
+                  githubUsername: fullUserData?.githubUsername,
+                }}
+                onLogout={() => void logout()}
+                onProfileUpdate={(updates) => {
+                  setFullUserData((prev) => prev ? { ...prev, ...updates } : prev);
+                }}
+              />
+            ) : route.type === 'home' ? (
               <div className="flex h-full min-h-0 w-full flex-col px-0 py-0 md:px-6 md:py-6">
                 <div className="mb-6">
                   <h1 className="text-2xl font-semibold">최근 연결한 세션</h1>
