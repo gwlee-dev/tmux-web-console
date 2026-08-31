@@ -60,7 +60,7 @@ async function login(page: import("@playwright/test").Page) {
   await page.getByPlaceholder("예: admin").fill(ADMIN_USERNAME);
   await page.getByPlaceholder("비밀번호 입력").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "로그인" }).click();
-  await expect(page.getByText("세션 목록")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("세션 목록").filter({ visible: true }).first()).toBeVisible({ timeout: 15000 });
 }
 
 test.describe("desktop flow", () => {
@@ -157,17 +157,32 @@ test.describe("mobile flow", () => {
     const mobileTrigger = page.locator('[data-sidebar="trigger"]').first();
     await expect(mobileTrigger).toBeVisible({ timeout: 10000 });
     await mobileTrigger.click();
-    await expect(page.getByText(E2E_SESSION, { exact: true })).toBeVisible({
+    // 모바일 시트는 내비 단(최근 세션 · 세션 목록 · 설정)이 먼저 열린다 —
+    // "세션 목록"을 눌러 세션 패널로 진입한 뒤 세션 행을 찾는다.
+    await page
+      .getByRole("button", { name: "세션 목록" })
+      .filter({ visible: true })
+      .first()
+      .click();
+    await expect(
+      page.getByText(E2E_SESSION, { exact: true }).filter({ visible: true })
+    ).toBeVisible({
       timeout: 15000
     });
-    await page.getByText(E2E_SESSION, { exact: true }).first().click();
+    await page
+      .getByText(E2E_SESSION, { exact: true })
+      .filter({ visible: true })
+      .first()
+      .click();
 
     // App.tsx does not call setOpenMobile(false) on session select, so the
-    // Sheet stays open until the user dismisses it. Explicitly press Escape
-    // to close it before interacting with the command Dialog; otherwise the
-    // sheet-overlay intercepts pointer events (observed flake) and/or the
-    // Sheet's DOM competes with the Dialog for role="dialog" matchers.
-    await page.keyboard.press("Escape");
+    // Sheet stays open until the user dismisses it. Escape는 포커스 복원과
+    // 얽혀 재오픈 플레이크가 있어, 오버레이 클릭(pointerDownOutside)으로
+    // 결정적으로 닫는다; otherwise the sheet-overlay intercepts pointer
+    // events and/or competes with the Dialog for role="dialog" matchers.
+    await page
+      .locator('[data-slot="sheet-overlay"]')
+      .click({ position: { x: 370, y: 420 } }); // 시트(좌측) 밖 우측 영역
     await expect(
       page.locator('[data-slot="sheet-content"]')
     ).not.toBeVisible({ timeout: 10000 });

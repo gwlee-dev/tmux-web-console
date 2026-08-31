@@ -78,7 +78,7 @@ test.describe("baseline: authenticated shell", () => {
     await page.getByPlaceholder("비밀번호 입력").fill(ADMIN_PASSWORD);
     await page.getByRole("button", { name: "로그인" }).click();
     // Post-login: sidebar renders "세션 목록" group label.
-    await expect(page.getByText("세션 목록")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("세션 목록").filter({ visible: true }).first()).toBeVisible({ timeout: 15000 });
     // Allow time for /api/tree to populate.
     await expect(page.getByText(E2E_SESSION, { exact: true })).toBeVisible({
       timeout: 10000
