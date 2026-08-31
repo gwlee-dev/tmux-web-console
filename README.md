@@ -109,3 +109,9 @@ PTY WebSocket(`/api/pty/socket`), 헬스체크(`/api/health`)를 제공합니다
 
 - 사용자별 권한 분리, 계정 저장소/암호 해시/비밀번호 재설정 흐름
 - TLS 종료 / 프록시 하드닝, rate limiting, 감사 로그
+
+## 라이선스
+
+코드는 [MIT](LICENSE)입니다. 번들된 폰트(Monoplex KR Nerd · Pretendard ·
+Noto Sans Symbols 2)는 각자의 OFL-1.1을 따릅니다 —
+[public/fonts/LICENSE-FONTS.md](public/fonts/LICENSE-FONTS.md).
