@@ -8,6 +8,9 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface FakeTmuxOverrides {
   getTree?: () => Promise<unknown>;
@@ -179,7 +182,7 @@ export async function buildTestApp(
 
   // Run Prisma migrations against the fresh temp DB.
   execSync("npx prisma migrate deploy", {
-    cwd: "/Users/gwlee/Repositories/tmux-web-console",
+    cwd: repoRoot,
     env: { ...process.env, DATABASE_URL: testDbUrl },
     stdio: "pipe"
   });
