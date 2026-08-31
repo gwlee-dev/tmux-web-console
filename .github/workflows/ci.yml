@@ -39,6 +39,11 @@ jobs:
       - run: corepack enable
       - run: yarn install --immutable
 
+      # Prisma 클라이언트는 생성 산출물이라 커밋되지 않음 — 설치 후 생성하고,
+      # 서버(e2e webServer 포함)가 여는 로컬 SQLite DB를 마이그레이션으로 준비.
+      - run: yarn prisma generate
+      - run: mkdir -p data && yarn prisma migrate deploy
+
       # Register the vendored Pretendard Variable + Monoplex KR Nerd with
       # fontconfig so the chromium-linux visual regression goldens match.
       - name: Install Pretendard + Monoplex KR Nerd system fonts
