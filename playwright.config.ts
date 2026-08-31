@@ -25,6 +25,14 @@ export default defineConfig({
       CORS_ORIGIN: "*"
     }
   },
+  expect: {
+    toHaveScreenshot: {
+      // linux 골든은 GitHub Actions(x86_64) 실물 기준. arm64 Docker에서
+      // 재검증할 때 생기는 안티앨리어싱 노이즈(실측 217~415px)는 흡수하되,
+      // 실제 UI 드리프트(실측 13k px 이상)는 잡히도록 여유만 둔다.
+      maxDiffPixels: 800
+    }
+  },
   projects: [
     {
       name: "chromium",
