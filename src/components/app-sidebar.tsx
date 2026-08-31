@@ -131,8 +131,9 @@ export function AppSidebar({
         </SidebarFooter>
       </Sidebar>
 
-      {/* Second sidebar: content panel */}
-      <Sidebar collapsible="none" className="hidden flex-1 md:flex">
+      {/* Second sidebar: content panel — 모바일 시트에서도 보여야 세션 목록에
+          접근할 수 있다(hidden md:flex였을 때 모바일에서 목록 접근 불가). */}
+      <Sidebar collapsible="none" className="min-w-0 flex-1">
         <SidebarHeader className="gap-3.5 border-b p-4">
           <div className="flex w-full items-center justify-between">
             <div className="text-base font-medium text-foreground">
